@@ -52,7 +52,7 @@ with st.form("busqueda_form"):
     formato = st.selectbox("Formato de resultados", ["Vista web (recomendado)", "CSV (Excel)"])
     buscar = st.form_submit_button("🔍 Buscar Cursos Gratuitos", use_container_width=True)
 
-# Función simulada para buscar cursos (Versión segura para Streamlit Cloud sin bloqueos de IP)
+# Función simulada para buscar cursos
 def buscar_cursos(tema, nivel_seleccionado):
     # En una app real, aquí conectarías una API.
     # Para la versión demo gratuita, usamos una simulación inteligente basada en patrones
@@ -96,4 +96,54 @@ def buscar_cursos(tema, nivel_seleccionado):
 # Procesar búsqueda
 if buscar and tema.strip():
     with st.spinner("🧠 Generando tu ruta de aprendizaje personalizada..."):
-        resultados
+        resultados = buscar_cursos(tema, nivel)
+    
+    if resultados:
+        st.success(f"✅ ¡Ruta generada para **{tema}**!")
+        
+        # Mostrar resultados
+        for resultado in resultados:
+            clase_nivel = {
+                "Principiante": "nivel-principiante",
+                "Intermedio": "nivel-intermedio", 
+                "Avanzado": "nivel-avanzado"
+            }.get(resultado["nivel"], "")
+            
+            with st.container():
+                st.markdown(f"""
+                <div class="resultado-card {clase_nivel}">
+                    <h3>🎯 {resultado['titulo']}</h3>
+                    <p>📚 <b>Nivel:</b> {resultado['nivel']} | 🌐 <b>Plataforma:</b> {resultado['plataforma']}</p>
+                    <p>📝 {resultado['descripcion']}</p>
+                    <a href="{resultado['url']}" target="_blank" style="display: inline-block; background-color: #4CAF50; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px; margin-top: 8px;">
+                        ➡️ Ver Curso
+                    </a>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # Botones de descarga
+        st.markdown("---")
+        df = pd.DataFrame(resultados)
+        if formato == "CSV (Excel)":
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Descargar en formato Excel (CSV)",
+                data=csv,
+                file_name=f"rutas_aprendizaje_{tema.replace(' ', '_')}.csv",
+                mime="text/csv"
+            )
+    else:
+        st.warning("⚠️ No encontramos recursos para este tema. Por favor, intenta con otro término o nivel.")
+else:
+    # Mensaje inicial cuando no se ha hecho búsqueda
+    st.info("💡 Ingresa el tema que deseas aprender y selecciona el nivel para comenzar")
+    st.image("https://i.imgur.com/3b5uB6F.png", caption="Ejemplo de búsqueda exitosa", use_column_width=True)
+
+# Pie de página
+st.markdown("---")
+st.markdown("""
+<div style="text-align: center; color: #666; font-size: 14px;">
+    ✨ Genera rutas de aprendizaje ilimitadas - Sin suscripciones - 100% gratuito<br>
+    Creado con ❤️ para democratizar el acceso al conocimiento
+</div>
+""", unsafe_allow_html=True)
