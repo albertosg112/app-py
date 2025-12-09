@@ -74,7 +74,6 @@ st.info("✨ **¡NUEVO!** Ahora incluye plataformas educativas poco conocidas co
 with st.form("busqueda_form"):
     col1, col2 = st.columns([3, 1])
     with col1:
-        # Nota: Tema input se inicializa si se usa el botón de ejemplo
         tema = st.text_input("¿Qué quieres aprender hoy?", 
                              placeholder="Ej: Python, Fotografía, Finanzas personales...",
                              key="tema_input")
@@ -86,11 +85,11 @@ with st.form("busqueda_form"):
     buscar = st.form_submit_button("🔍 Buscar Cursos Gratuitos")
 
 
-# --- LÓGICA DE BÚSQUEDA ---
+# --- LÓGICA DE BÚSQUEDA (CORREGIDA) ---
 def buscar_cursos(tema, nivel_seleccionado):
     resultados = []
     
-    # Plataformas educativas
+    # Plataformas educativas (SIN ESPACIOS EN LAS URLs!)
     plataformas = {
         "youtube": {"nombre": "YouTube", "url": f"https://www.youtube.com/results?search_query=curso+completo+gratis+{tema.replace(' ', '+')}", "icono": "📺", "niveles": ["Principiante", "Intermedio"]},
         "coursera": {"nombre": "Coursera (Auditoría)", "url": f"https://www.coursera.org/search?query={tema.replace(' ', '%20')}&free=true", "icono": "🎓", "niveles": ["Intermedio", "Avanzado"]},
@@ -104,26 +103,32 @@ def buscar_cursos(tema, nivel_seleccionado):
     progreso = st.progress(0)
     status_text = st.empty()
     
-    # Animación más rápida para mejor UX
     for i in range(100):
         status_text.text(f"🔬 Analizando fuentes educativas ({i+1}%)")
         progreso.progress(i + 1)
         time.sleep(0.005) 
     
-    # Si se seleccionó un nivel específico, filtramos las plataformas
-    niveles_reales = ["Principiante", "Intermedio", "Avanzado"]
-    if nivel_seleccionado != "Cualquiera":
-        niveles_reales = [nivel_seleccionado]
+    # Determinar niveles a procesar
+    if nivel_seleccionado == "Cualquiera":
+        niveles_permitidos = ["Principiante", "Intermedio", "Avanzado"]
+    else:
+        niveles_permitidos = [nivel_seleccionado]
 
     # Generar resultados realistas
     for nombre_plataforma, datos in plataformas.items():
         if len(resultados) >= 6:
             break
             
-        # Determinar el nivel del resultado. Si se filtra, se usa ese nivel.
-        nivel_actual = random.choice([n for n in datos['niveles'] if n in niveles_reales])
+        # Filtrar niveles compatibles
+        niveles_compatibles = [n for n in datos['niveles'] if n in niveles_permitidos]
+        
+        # Si no hay niveles compatibles, saltar esta plataforma
+        if not niveles_compatibles:
+            continue
+            
+        nivel_actual = random.choice(niveles_compatibles)
 
-        # Lógica de títulos realistas (se mantiene igual)
+        # Lógica de títulos realistas
         titulos_realistas = {
             "python": ["Curso Completo de Python - Desde Cero hasta Experto", "Python para Data Science - Guía Práctica con Proyectos", "Automatización con Python - Domina el Lenguaje en 30 Días"],
             "marketing": ["Marketing Digital Completo - Estrategias para 2025", "SEO Avanzado - Posiciona tu Sitio Web en Google", "Email Marketing Profesional - Construye tu Lista y Vende"],
@@ -167,26 +172,25 @@ if buscar and tema.strip():
         st.success(f"✅ ¡Ruta generada para **{tema}**! ({len(resultados)} recursos verificados)")
         
         # Mostrar resultados
-        for i, resultado in enumerate(resultados):
+        for resultado in resultados:
             color_borde = {
                 "Principiante": "#2196f3",  # Azul
                 "Intermedio": "#4caf50",    # Verde
                 "Avanzado": "#ff9800"       # Naranja
             }.get(resultado["nivel"], "#9e9e9e")
             
-            with st.container():
-                st.markdown(f"""
-                <div class="resultado-card" style="border-left: 5px solid {color_borde};">
-                    <h3>🎯 {resultado['titulo']}</h3>
-                    <p>📚 <b>Nivel:</b> {resultado['nivel']} | 🌐 <b>Plataforma:</b> {resultado['plataforma']}</p>
-                    <p>📝 {resultado['descripcion']}</p>
-                    <a href="{resultado['url']}" target="_blank" style="display: inline-block; background-color: #4CAF50; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px; margin-top: 8px; font-weight: bold;">
-                        ➡️ Acceder al curso
-                    </a>
-                </div>
-                """, unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="resultado-card" style="border-left: 5px solid {color_borde};">
+                <h3>🎯 {resultado['titulo']}</h3>
+                <p>📚 <b>Nivel:</b> {resultado['nivel']} | 🌐 <b>Plataforma:</b> {resultado['plataforma']}</p>
+                <p>📝 {resultado['descripcion']}</p>
+                <a href="{resultado['url']}" target="_blank" style="display: inline-block; background-color: #4CAF50; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px; margin-top: 8px; font-weight: bold;">
+                    ➡️ Acceder al curso
+                </a>
+            </div>
+            """, unsafe_allow_html=True)
         
-        # Botón de descarga siempre visible y activo
+        # Botón de descarga
         st.markdown("---")
         df = pd.DataFrame(resultados)
         csv = df.to_csv(index=False).encode('utf-8')
@@ -197,7 +201,6 @@ if buscar and tema.strip():
             mime="text/csv",
             use_container_width=True
         )
-            
     else:
         st.warning("⚠️ No encontramos recursos para este tema. Por favor, intenta con otro término o nivel.")
 
@@ -205,7 +208,6 @@ if buscar and tema.strip():
 else:
     st.info("💡 Ingresa el tema que deseas aprender y selecciona el nivel para comenzar")
     
-    # Ejemplo visual para motivar
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Temas populares", "Python, Marketing, Inglés")
@@ -214,7 +216,6 @@ else:
     with col3:
         st.metric("Recursos gratuitos", "100% acceso libre")
 
-    # Ejemplos de búsquedas populares
     st.markdown("### 🚀 Ejemplos de búsquedas que funcionan muy bien:")
     ejemplos = ["Python", "Inglés básico", "Marketing digital", "Diseño gráfico", "Finanzas personales", "Desarrollo web"]
     
@@ -233,4 +234,3 @@ st.markdown("""
     🌟 Herramienta para democratizar el acceso al conocimiento<br>
 </div>
 """, unsafe_allow_html=True)
-
