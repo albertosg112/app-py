@@ -234,6 +234,3 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-
-### 👉 ¿Qué quieres mejorar ahora?
-Ya que el buscador está limpio y funcional, ¿quieres que nos enfoquemos en **expandir la base de datos** (agregar más plataformas) o en el **diseño visual** (logos, banners)?
