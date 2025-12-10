@@ -1,6 +1,7 @@
-streamlit==1.32.0
-pandas==2.2.1
-requests==2.31.0
-aiohttp==3.9.3
-python-dotenv==1.0.1
-watchdog==4.0.0
+# requirements.txt
+streamlit
+pandas
+requests
+aiohttp
+python-dotenv
+
