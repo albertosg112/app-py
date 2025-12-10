@@ -1102,7 +1102,7 @@ class ErrorHandler:
         # 1. Verificar caché primero
         cache_key = f"service:{service_name}"
         cached_data = cache_manager.get(cache_key)
-        if cached_
+        if cached:
             logger.info(f"✅ Recuperación exitosa usando caché para: {service_name}")
             return {
                 'strategy': 'cache_fallback',
@@ -4999,6 +4999,7 @@ if __name__ == "__main__":
             logger.info("✅ Recursos limpiados correctamente")
         except Exception as e:
             logger.error(f"❌ Error limpiando recursos: {e}")
+
 
 
 
