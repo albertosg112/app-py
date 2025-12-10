@@ -1,7 +1,4 @@
-# requirements.txt
 streamlit
 pandas
-requests
-aiohttp
-python-dotenv
+groq
 
