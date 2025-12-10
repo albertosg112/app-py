@@ -495,48 +495,65 @@ async def buscar_recursos_multicapa(tema: str, idioma: str, nivel: str) -> List[
 # FUNCIÓN VISUALIZACIÓN (CORREGIDA - HTML LIMPIO)
 # ----------------------------
 def mostrar_recurso_con_ia(res: RecursoEducativo, index: int):
-    """Renderiza la tarjeta del curso sin errores de HTML"""
+    """Muestra la tarjeta del recurso con HTML corregido para evitar que se vea el código"""
     
-    # Colores por tipo
+    # Colores según tipo
     colors = {
         "conocida": "#2E7D32", # Verde
         "oculta": "#E65100",   # Naranja
-        "verificada": "#1565C0",# Azul
+        "semantica": "#1565C0",# Azul
         "tor": "#6A1B9A",      # Morado
-        "ia": "#00838F"        # Cyan
+        "ia": "#00838F",       # Cyan
+        "simulada": "#455A64"  # Gris
     }
-    color_borde = colors.get(res.tipo, "#555")
+    color = colors.get(res.tipo, "#424242")
     
-    # Preparar bloque de IA
+    # Badges
+    badges_html = ""
+    if res.certificacion:
+        c = res.certificacion
+        if c.tipo == "gratuito":
+            badges_html += f"<span style='background:#4CAF50; color:white; padding:2px 6px; border-radius:4px; font-size:0.7em; margin-right:5px;'>✅ Certificado Gratis</span>"
+        elif c.tipo == "audit":
+            badges_html += f"<span style='background:#FF9800; color:white; padding:2px 6px; border-radius:4px; font-size:0.7em; margin-right:5px;'>🎓 Auditoría Gratis</span>"
+        if c.validez_internacional:
+            badges_html += f"<span style='background:#2196F3; color:white; padding:2px 6px; border-radius:4px; font-size:0.7em; margin-right:5px;'>🌍 Global</span>"
+
+    # Análisis IA
     ia_html = ""
     if res.metadatos_analisis:
         meta = res.metadatos_analisis
-        calidad = float(meta.get('calidad_ia', 0.0)) * 100
-        texto_ia = meta.get('recomendacion_personalizada', 'Contenido verificado.')
+        calidad = float(meta.get('calidad_ia', 0.8)) * 100
+        rec = meta.get('recomendacion_personalizada', 'Recurso verificado.')
         
         ia_html = f"""
-        <div style='background:#f8f9fa; margin-top:10px; padding:8px; border-left:3px solid {color_borde}; border-radius:4px;'>
-            <strong style='color:#333'>🤖 IA:</strong> <span style='color:#555'>{texto_ia}</span><br>
-            <span style='font-size:0.8em; font-weight:bold; color:{color_borde}'>Calidad Didáctica: {calidad:.0f}%</span>
-        </div>
-        """
+<div style='background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin-top: 10px; border-left: 4px solid {color};'>
+    <strong style='color: #333;'>🤖 Análisis IA:</strong> {rec}<br>
+    <div style='margin-top:5px;'>
+        <span style='background: #e8f5e9; color: #2e7d32; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; font-weight: bold;'>
+            Calidad: {calidad:.0f}%
+        </span>
+    </div>
+</div>
+"""
 
-    # HTML Compacto (Sin indentación para evitar bug de Streamlit)
+    # HTML DE LA TARJETA (PEGADO A LA IZQUIERDA PARA EVITAR EL ERROR)
     html_card = f"""
-<div style="border:1px solid #ddd; border-top:4px solid {color_borde}; border-radius:8px; padding:15px; margin-bottom:15px; background:white; box-shadow:0 2px 4px rgba(0,0,0,0.05);">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h3 style="margin:0; font-size:1.1rem; color:#222;">{res.titulo}</h3>
-        <span style="background:{color_borde}; color:white; padding:2px 8px; border-radius:12px; font-size:0.7em;">{res.tipo.upper()}</span>
+<div style="border: 1px solid #e0e0e0; border-left: 5px solid {color}; border-radius: 8px; padding: 20px; margin-bottom: 15px; background-color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <h3 style="margin: 0; color: #333; font-size: 1.2rem;">{res.titulo}</h3>
+        <span style="background-color: {color}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; text-transform: uppercase; font-weight: bold;">{res.tipo}</span>
     </div>
-    <div style="font-size:0.85em; color:#666; margin:5px 0;">
-        🏛️ {res.plataforma} &nbsp;•&nbsp; 📚 {res.nivel} &nbsp;•&nbsp; ⭐ {res.confianza*100:.0f}%
+    <div style="color: #666; font-size: 0.85rem; margin-bottom: 8px;">
+        <span>🌐 {res.plataforma}</span> &nbsp;|&nbsp; <span>📚 {res.nivel}</span> &nbsp;|&nbsp; <span>⭐ Confianza: {res.confianza*100:.0f}%</span>
     </div>
-    <p style="color:#444; font-size:0.95em; margin:8px 0;">{res.descripcion}</p>
+    <div style="margin-bottom: 8px;">{badges_html}</div>
+    <p style="color: #444; font-size: 0.95rem; margin: 0 0 15px 0;">{res.descripcion}</p>
     {ia_html}
-    <div style="margin-top:12px; text-align:right;">
-        <a href="{res.url}" target="_blank" style="text-decoration:none;">
-            <button style="background:linear-gradient(90deg, {color_borde}, #444); color:white; border:none; padding:8px 16px; border-radius:4px; cursor:pointer; font-weight:bold;">
-                Acceder al Recurso ➡️
+    <div style="margin-top: 15px;">
+        <a href="{res.url}" target="_blank" style="text-decoration: none;">
+            <button style="background: linear-gradient(90deg, {color}, #555); color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%;">
+                ➡️ Acceder al Recurso
             </button>
         </a>
     </div>
@@ -1879,5 +1896,6 @@ logger.info("✅ Sistema de búsqueda profesional con IA Groq iniciado correctam
 logger.info(f"🧠 IA Avanzada: Activa con Groq API - Versión 3.0.1")
 logger.info(f"🌐 Plataformas indexadas: {len(IDIOMAS)} idiomas soportados")
 logger.info(f"⚡ Rendimiento optimizado para producción empresarial")
+
 
 
