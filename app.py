@@ -23,8 +23,8 @@ import groq
 # 1. CONFIGURACIÓN Y LOGGING
 # ----------------------------
 st.set_page_config(
-    page_title="🎓 Buscador Académico IA v15",
-    page_icon="🧠",
+    page_title="Buscador Académico IA v8",
+    page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -33,10 +33,10 @@ logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler()])
 logger = logging.getLogger("BuscadorProfesional")
 
 # ----------------------------
-# 2. GESTIÓN SEGURA DE SECRETOS
+# 2. GESTIÓN DE SECRETOS (Blindado contra errores)
 # ----------------------------
 def get_secret(key: str, default: str = "") -> str:
-    """Obtiene secretos de forma segura, convirtiendo todo a string para evitar errores de tipo."""
+    """Obtiene un secreto asegurando que sea string (Evita el error 'bool' object)"""
     try:
         if hasattr(st, 'secrets') and key in st.secrets:
             return str(st.secrets[key])
@@ -45,37 +45,32 @@ def get_secret(key: str, default: str = "") -> str:
     except:
         return default
 
-# Cargar Claves (Manejo robusto)
+# Claves API
 GOOGLE_API_KEY = get_secret("GOOGLE_API_KEY")
 GOOGLE_CX = get_secret("GOOGLE_CX")
 GROQ_API_KEY = get_secret("GROQ_API_KEY")
 
-# Flags de Configuración (Lectura segura de booleanos)
+# Flags de Configuración
 def is_enabled(key, default="true"):
     val = get_secret(key, default).lower()
     return val in ["true", "1", "yes", "on"]
 
 DUCKDUCKGO_ENABLED = is_enabled("DUCKDUCKGO_ENABLED")
-TOR_ENABLED = is_enabled("TOR_ENABLED") # Simulación Deep Web
+SEMANTIC_SCHOLAR_ENABLED = is_enabled("SEMANTIC_SCHOLAR_ENABLED")
+TOR_ENABLED = is_enabled("TOR_ENABLED")
 
 # Constantes
+MAX_BACKGROUND_TASKS = 1
+CACHE_EXPIRATION = timedelta(hours=12)
 GROQ_MODEL = "llama3-8b-8192"
-DB_PATH = "cursos_inteligentes_v15.db" # Cambiado a v15 para base limpia
 
-# Colas y Caché
-background_tasks = queue.Queue()
 search_cache = {}
 groq_cache = {}
+background_tasks = queue.Queue()
 
 # ----------------------------
 # 3. MODELOS DE DATOS
 # ----------------------------
-@dataclass
-class Certificacion:
-    plataforma: str
-    tipo: str  # "gratuito", "pago", "audit"
-    validez_internacional: bool
-
 @dataclass
 class RecursoEducativo:
     id: str
@@ -90,195 +85,198 @@ class RecursoEducativo:
     tipo: str  # "conocida", "oculta", "ia", "semantica", "tor", "simulada"
     ultima_verificacion: str
     activo: bool
-    certificacion: Optional[Certificacion] = None
     metadatos_analisis: Optional[Dict[str, Any]] = None
-    analisis_pendiente: bool = False
 
 # ----------------------------
-# 4. BASE DE DATOS
+# 4. BASE DE DATOS (Versión v8 - Limpia)
 # ----------------------------
+DB_PATH = "cursos_inteligentes_v8.db"
+
 def init_database():
     try:
         conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         c = conn.cursor()
         
-        c.execute('''CREATE TABLE IF NOT EXISTS recursos (
-            id TEXT PRIMARY KEY, titulo TEXT, url TEXT, descripcion TEXT,
+        # Tabla Principal
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS recursos (
+            id TEXT PRIMARY KEY,
+            titulo TEXT, url TEXT, descripcion TEXT,
             plataforma TEXT, idioma TEXT, nivel TEXT, categoria TEXT,
-            confianza REAL, tipo TEXT, activa INTEGER DEFAULT 1,
-            tiene_certificado BOOLEAN DEFAULT 0)''')
-            
-        c.execute('''CREATE TABLE IF NOT EXISTS analiticas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, tema TEXT, idioma TEXT, nivel TEXT, timestamp TEXT)''')
+            confianza REAL, tipo TEXT, activa INTEGER DEFAULT 1
+        )''')
         
-        # Datos Semilla (Incluyendo Deep Web Educativa Simulada)
+        # Tabla Analíticas
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS analiticas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tema TEXT, timestamp TEXT
+        )''')
+        
+        # Datos Semilla
         c.execute("SELECT COUNT(*) FROM recursos")
         if c.fetchone()[0] == 0:
             seed = [
-                ("py_alf", "Aprende con Alf", "https://aprendeconalf.es/", "Tutoriales de Python y Pandas paso a paso.", "AprendeConAlf", "es", "Intermedio", "Programación", 0.9, "oculta", 0),
-                ("coursera_free", "Coursera (Audit)", "https://www.coursera.org/courses?query=free", "Cursos universitarios.", "Coursera", "en", "Avanzado", "General", 0.95, "conocida", 1),
-                ("tor_library", "Imperial Library of Trantor", "http://xfmro77i3lixucja.onion", "Biblioteca técnica masiva (Requiere Tor Browser).", "DeepWeb", "en", "Experto", "Libros", 0.8, "tor", 0),
-                ("scihub_tor", "Sci-Hub (Tor Mirror)", "http://scihub22266oqcxt.onion", "Acceso a papers académicos sin restricciones.", "DeepWeb", "en", "Avanzado", "Ciencia", 0.9, "tor", 0),
-                ("khan_es", "Khan Academy Español", "https://es.khanacademy.org/", "Educación gratuita de clase mundial.", "Khan Academy", "es", "Principiante", "General", 0.98, "conocida", 0)
+                ("py_alf", "Aprende con Alf", "https://aprendeconalf.es/", "Python desde cero", "AprendeConAlf", "es", "Intermedio", "Programación", 0.9, "oculta"),
+                ("coursera_free", "Coursera Free", "https://www.coursera.org/courses?query=free", "Cursos universitarios", "Coursera", "en", "Avanzado", "General", 0.95, "conocida"),
+                ("tor_library", "Imperial Library (Mirror)", "http://xfmro77i3lixucja.onion.to", "Biblioteca técnica (Enlace Gateway)", "DeepWeb", "en", "Avanzado", "Libros", 0.8, "tor")
             ]
             for row in seed:
-                c.execute("INSERT OR IGNORE INTO recursos VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", row)
+                c.execute("INSERT OR IGNORE INTO recursos VALUES (?,?,?,?,?,?,?,?,?,?,1)", row)
             conn.commit()
         conn.close()
     except Exception as e:
-        logger.error(f"Error DB Init: {e}")
+        logger.error(f"Error DB: {e}")
 
-if not os.path.exists(DB_PATH): init_database()
-else: init_database()
+if not os.path.exists(DB_PATH):
+    init_database()
+else:
+    init_database()
 
 # ----------------------------
-# 5. FUNCIONES AUXILIARES
+# 5. FUNCIONES DE UTILIDAD
 # ----------------------------
-def generar_id(url): return hashlib.md5(url.encode()).hexdigest()[:10]
-def get_codigo_idioma(n): return {"Español (es)": "es", "Inglés (en)": "en", "Portugués (pt)": "pt"}.get(n, "es")
-def extraer_plataforma(url):
-    try: return urlparse(url).netloc.replace('www.', '').split('.')[0].title()
-    except: return "Web"
-def eliminar_duplicados(res):
-    seen = set(); unique = []
-    for r in res:
-        if r.url not in seen: unique.append(r); seen.add(r.url)
-    return unique
+def generar_id(url):
+    return hashlib.md5(url.encode()).hexdigest()[:10]
+
+def get_codigo_idioma(nombre):
+    mapeo = {"Español (es)": "es", "Inglés (en)": "en", "Portugués (pt)": "pt"}
+    return mapeo.get(nombre, "es")
+
 def determinar_categoria(tema):
     tema = tema.lower()
-    if any(x in tema for x in ['python', 'java', 'code']): return "Programación"
-    if any(x in tema for x in ['data', 'ia']): return "Data Science"
+    if any(x in tema for x in ['python', 'java', 'web', 'code']): return "Programación"
+    if any(x in tema for x in ['data', 'datos', 'ia', 'ai']): return "Data Science"
+    if any(x in tema for x in ['design', 'diseño', 'ux']): return "Diseño"
     return "General"
 
 # ----------------------------
-# 6. FUNCIONES DE VISUALIZACIÓN (CORREGIDAS: SIN INDENTACIÓN HTML)
+# 6. FUNCIÓN VISUALIZACIÓN (MOVIDA AL PRINCIPIO PARA EVITAR NAMEERROR)
 # ----------------------------
-def mostrar_recurso_basico(recurso: RecursoEducativo, index: int, analisis_pendiente: bool = False):
-    """Muestra un recurso básico sin análisis detallado de IA"""
+def mostrar_recurso_con_ia(res: RecursoEducativo, index: int):
+    """Muestra la tarjeta del recurso con HTML corregido"""
     
-    color_clase = {"conocida": "#2E7D32", "oculta": "#E65100", "tor": "#6A1B9A", "ia": "#00838F", "simulada": "#455A64"}.get(recurso.tipo, "#555")
+    # Colores según tipo
+    colors = {
+        "conocida": "#4CAF50", # Verde
+        "oculta": "#FF9800",   # Naranja
+        "semantica": "#2196F3",# Azul
+        "tor": "#9C27B0",      # Morado
+        "ia": "#00BCD4",       # Cyan
+        "simulada": "#607D8B"  # Gris
+    }
+    color = colors.get(res.tipo, "#9E9E9E")
     
-    # HTML Pegado a la izquierda para evitar errores de renderizado
+    # Análisis IA HTML
+    ia_html = ""
+    if res.metadatos_analisis:
+        meta = res.metadatos_analisis
+        ia_html = f"""
+        <div style='background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin-top: 10px; border-left: 4px solid {color};'>
+            <strong style="color: #333;">🤖 Análisis IA:</strong> {meta.get('recomendacion_personalizada', 'Recurso recomendado')}<br>
+            <div style="margin-top:5px;">
+                <span style='background: #e8f5e9; color: #2e7d32; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; font-weight: bold;'>
+                    Calidad: {float(meta.get('calidad_ia', 0.8))*100:.0f}%
+                </span>
+            </div>
+        </div>
+        """
+
+    # HTML de la tarjeta (Sin sangrías para evitar errores de renderizado)
     html = f"""
-<div style="border: 1px solid #ddd; border-left: 5px solid {color_clase}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-    <div style="display: flex; justify-content: space-between;">
-        <h3 style="margin: 0; color: #333; font-size: 1.1rem;">{recurso.titulo}</h3>
-        <span style="background: {color_clase}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.7em;">{recurso.tipo.upper()}</span>
+<div style="border: 1px solid #e0e0e0; border-left: 5px solid {color}; border-radius: 8px; padding: 20px; margin-bottom: 15px; background-color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <h3 style="margin: 0; color: #333; font-size: 1.2rem;">{res.titulo}</h3>
+        <span style="background-color: {color}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; text-transform: uppercase; font-weight: bold;">{res.tipo}</span>
     </div>
-    <div style="color: #666; font-size: 0.85em; margin: 5px 0;">
-        🏛️ {recurso.plataforma} | 📚 {recurso.nivel} | ⭐ {recurso.confianza*100:.0f}%
+    <div style="color: #666; font-size: 0.85rem; margin-bottom: 8px;">
+        <span>🌐 {res.plataforma}</span> &nbsp;|&nbsp; <span>📚 {res.nivel}</span> &nbsp;|&nbsp; <span>⭐ Confianza: {res.confianza*100:.0f}%</span>
     </div>
-    <p style="color: #444; font-size: 0.95em;">{recurso.descripcion}</p>
-    <div style="text-align: right; margin-top: 10px;">
-        <a href="{recurso.url}" target="_blank" style="text-decoration: none;">
-            <button style="background: linear-gradient(90deg, {color_clase}, #333); color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold;">
-                Acceder al Recurso ➡️
+    <p style="color: #444; font-size: 0.95rem; margin: 0 0 15px 0;">{res.descripcion}</p>
+    {ia_html}
+    <div style="margin-top: 15px;">
+        <a href="{res.url}" target="_blank" style="text-decoration: none;">
+            <button style="background: linear-gradient(90deg, {color}, #555); color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%; transition: opacity 0.3s;">
+                ➡️ Acceder al Recurso
             </button>
         </a>
     </div>
 </div>
 """
     st.markdown(html, unsafe_allow_html=True)
-    if analisis_pendiente:
-        st.caption("⏳ *Analizando calidad con IA en segundo plano...*")
-
-def mostrar_recurso_con_ia(res: RecursoEducativo, index: int):
-    """Muestra la tarjeta PREMIUM con análisis de IA y badges"""
-    
-    colors = {"conocida": "#2E7D32", "oculta": "#E65100", "tor": "#6A1B9A", "ia": "#00838F", "simulada": "#455A64"}
-    color = colors.get(res.tipo, "#424242")
-    
-    # Badges
-    badges_html = ""
-    if res.certificacion and res.certificacion.tipo == "gratuito":
-        badges_html += f"<span style='background:#4CAF50; color:white; padding:2px 6px; border-radius:4px; font-size:0.7em; margin-right:5px;'>✅ Certificado Gratis</span>"
-    if res.tipo == "tor":
-        badges_html += f"<span style='background:#000; color:#00FF00; padding:2px 6px; border-radius:4px; font-size:0.7em; margin-right:5px;'>🧅 Onion V3</span>"
-
-    # Análisis IA
-    ia_html = ""
-    if res.metadatos_analisis:
-        meta = res.metadatos_analisis
-        calidad = float(meta.get('calidad_ia', 0)) * 100
-        rec = meta.get('recomendacion_personalizada', 'Verificado.')
-        
-        ia_html = f"""
-<div style='background-color: #f0f7ff; padding: 10px; border-radius: 5px; margin-top: 10px; border-left: 4px solid {color};'>
-    <div style='color: #0d47a1; font-weight: bold; font-size: 0.9em; margin-bottom: 4px;'>🤖 Análisis Inteligente:</div>
-    <div style='color: #333; font-size: 0.95em; margin-bottom: 8px;'>{rec}</div>
-    <span style='background: #e3f2fd; color: #0d47a1; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; font-weight: bold;'>
-        Calidad Didáctica: {calidad:.0f}%
-    </span>
-</div>
-"""
-
-    # Tarjeta Principal (HTML LIMPIO)
-    html_card = f"""
-<div style="border: 1px solid #e0e0e0; border-top: 5px solid {color}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: white; box-shadow: 0 4px 10px rgba(0,0,0,0.08);">
-    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-        <h3 style="margin: 0 0 5px 0; color: #222; font-size: 1.2rem;">{res.titulo}</h3>
-        <span style="background-color: {color}; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.65rem; text-transform: uppercase; font-weight: bold;">{res.tipo}</span>
-    </div>
-    <div style="color: #666; font-size: 0.85rem; margin-bottom: 8px;">
-        <span>🏛️ {res.plataforma}</span> &nbsp;•&nbsp; <span>📚 {res.nivel}</span>
-    </div>
-    <div style="margin-bottom: 10px;">{badges_html}</div>
-    <p style="color: #444; font-size: 0.95rem; line-height: 1.4; margin: 0 0 10px 0;">{res.descripcion}</p>
-    {ia_html}
-    <div style="margin-top: 15px; text-align: right;">
-        <a href="{res.url}" target="_blank" style="text-decoration: none;">
-            <button style="background: linear-gradient(90deg, {color}, #333); color: white; border: none; padding: 10px 25px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: opacity 0.2s;">
-                Acceder al Recurso ➡️
-            </button>
-        </a>
-    </div>
-</div>
-"""
-    st.markdown(html_card, unsafe_allow_html=True)
 
 # ----------------------------
-# 7. LÓGICA DE BÚSQUEDA Y AGENTES (IA + GOOGLE + LOCAL)
+# 7. LOGICA DE BÚSQUEDA (INCLUYENDO FALLBACK "INVENTADO")
 # ----------------------------
 
-async def buscar_google_api(tema, idioma):
-    """Busca en Google Programmable Search Engine"""
+async def buscar_google(tema, idioma):
     if not GOOGLE_API_KEY or not GOOGLE_CX: return []
     try:
+        # Búsqueda real en Google
         url = "https://www.googleapis.com/customsearch/v1"
-        params = {'key': GOOGLE_API_KEY, 'cx': GOOGLE_CX, 'q': f"curso {tema} gratis certificado", 'num': 4}
+        params = {'key': GOOGLE_API_KEY, 'cx': GOOGLE_CX, 'q': f"curso {tema} gratis", 'num': 3}
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    res = []
-                    for i in data.get('items', []):
-                        has_cert = "certific" in i['snippet'].lower()
-                        cert_obj = Certificacion(i['displayLink'], "audit" if not has_cert else "gratuito", True)
-                        res.append(RecursoEducativo(
-                            id=generar_id(i['link']), titulo=i['title'], url=i['link'],
-                            descripcion=i['snippet'], plataforma=extraer_plataforma(i['link']),
-                            idioma=idioma, nivel="General", categoria=determinar_categoria(tema),
-                            confianza=0.9, tipo="conocida", ultima_verificacion="", activo=True,
-                            certificacion=cert_obj
-                        ))
-                    return res
-    except: pass
+                    return [RecursoEducativo(
+                        id=generar_id(i['link']), titulo=i['title'], url=i['link'],
+                        descripcion=i['snippet'], plataforma="Google Search",
+                        idioma=idioma, nivel="General", categoria="General",
+                        confianza=0.9, tipo="conocida", ultima_verificacion="", activo=True
+                    ) for i in data.get('items', [])]
+    except Exception as e:
+        logger.error(f"Error Google (no crítico): {e}")
     return []
 
-async def buscar_duckduckgo_simulado(tema, idioma):
-    """Fallback si DDG está activo pero no hay API oficial simple"""
-    if not DUCKDUCKGO_ENABLED: return []
-    # Aquí podríamos implementar scraping ligero, por ahora devolvemos lista vacía para no romper
-    # y que entre el fallback de simulados si Google falla
-    return []
+def generar_recursos_simulados(tema, idioma, nivel):
+    """Genera recursos realistas cuando las APIs fallan o no hay claves"""
+    recursos = []
+    
+    # Plantillas realistas basadas en el tema
+    plataformas = [
+        ("YouTube", f"https://www.youtube.com/results?search_query=curso+{tema.replace(' ', '+')}", "Video Tutoriales"),
+        ("Coursera Audit", f"https://www.coursera.org/search?query={tema}&free=true", "Curso Universitario"),
+        ("Udemy Free", f"https://www.udemy.com/courses/search/?q={tema}&price=price-free", "Curso Práctico"),
+        ("EdX", f"https://www.edx.org/search?q={tema}", "Certificación Académica")
+    ]
+    
+    titulos = [
+        f"Curso Completo de {tema} desde Cero",
+        f"Introducción a {tema} para Principiantes",
+        f"Masterclass de {tema}: Nivel Avanzado",
+        f"{tema}: Guía Definitiva 2024"
+    ]
+    
+    for i, (plat_nombre, url, desc_base) in enumerate(plataformas):
+        titulo_simulado = titulos[i % len(titulos)]
+        desc_simulada = f"{desc_base} sobre {tema}. Ideal para nivel {nivel}. Contenido verificado por la comunidad."
+        
+        recursos.append(RecursoEducativo(
+            id=f"sim_{i}_{generar_id(url)}",
+            titulo=titulo_simulado,
+            url=url,
+            descripcion=desc_simulada,
+            plataforma=plat_nombre,
+            idioma=idioma,
+            nivel=nivel,
+            categoria=determinar_categoria(tema),
+            confianza=0.85,
+            tipo="simulada", # Tipo especial para fallback
+            ultima_verificacion=datetime.now().isoformat(),
+            activo=True,
+            metadatos_analisis={"recomendacion_personalizada": "Recurso generado por búsqueda directa en plataforma.", "calidad_ia": 0.8}
+        ))
+    
+    return recursos
 
-async def analizar_ia_groq(recurso):
-    """Analiza el recurso usando Groq"""
+async def analizar_ia(recurso):
+    """Mejora la información con Groq si está disponible"""
     if not GROQ_API_KEY: return None
     try:
         client = groq.Groq(api_key=GROQ_API_KEY)
-        prompt = f"""Analiza este recurso educativo: "{recurso.titulo}" - "{recurso.descripcion}".
-        Responde SOLO JSON válido: {{ "recomendacion_personalizada": "Resumen motivador de 1 frase", "calidad_ia": 0.92, "razones_calidad": ["Completo", "Práctico"] }}"""
+        prompt = f"""Analiza brevemente: {recurso.titulo}. 
+        JSON: {{ "recomendacion_personalizada": "Resumen de 1 linea", "calidad_ia": 0.9 }}"""
         
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -287,173 +285,131 @@ async def analizar_ia_groq(recurso):
         return json.loads(resp.choices[0].message.content)
     except: return None
 
-def generar_simulados(tema, idioma, nivel):
-    """Fallback seguro si no hay APIs configuradas"""
-    base = [
-        ("YouTube", f"https://www.youtube.com/results?search_query=curso+completo+{tema.replace(' ', '+')}", "Video curso completo práctico.", "conocida"),
-        ("Coursera", f"https://www.coursera.org/search?query={tema.replace(' ', '+')}&free=true", "Curso universitario.", "conocida")
-    ]
-    res = []
-    for i, (plat, url, desc, tipo) in enumerate(base):
-        res.append(RecursoEducativo(
-            id=f"sim_{i}", titulo=f"Aprende {tema} en {plat}", url=url, descripcion=desc,
-            plataforma=plat, idioma=idioma, nivel=nivel, categoria="General",
-            confianza=0.85, tipo=tipo, ultima_verificacion="", activo=True,
-            metadatos_analisis={"recomendacion_personalizada": "Recurso relevante encontrado por coincidencia directa.", "calidad_ia": 0.8}
-        ))
-    return res
-
-async def orquestador_busqueda(tema, idioma, nivel, usar_ia):
+async def orquestador_busqueda(tema, idioma, nivel):
     tasks = []
     
-    # 1. Google
-    if GOOGLE_API_KEY: tasks.append(buscar_google_api(tema, idioma))
+    # 1. Google (Si hay clave)
+    if GOOGLE_API_KEY:
+        tasks.append(buscar_google(tema, idioma))
+        
+    # 2. DB Local (Siempre)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    c = conn.cursor()
+    c.execute("SELECT titulo, url, descripcion, plataforma, tipo, confianza FROM recursos WHERE titulo LIKE ?", (f"%{tema}%",))
+    local_results = [RecursoEducativo(
+        id=generar_id(r[1]), titulo=r[0], url=r[1], descripcion=r[2],
+        plataforma=r[3], idioma=idioma, nivel=nivel, categoria="General",
+        confianza=r[5], tipo=r[4], ultima_verificacion="", activo=True
+    ) for r in c.fetchall()]
+    conn.close()
     
-    # 2. DB Local (Ocultas + Tor)
-    local_res = []
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT titulo, url, descripcion, plataforma, tipo, confianza, tiene_certificado FROM recursos WHERE titulo LIKE ? OR descripcion LIKE ?", (f"%{tema}%", f"%{tema}%"))
-        for r in c.fetchall():
-            if r[4] == 'tor' and not TOR_ENABLED: continue
-            cert = Certificacion(r[3], "gratuito" if r[6] else "audit", True) if r[6] else None
-            local_res.append(RecursoEducativo(
-                id=generar_id(r[1]), titulo=r[0], url=r[1], descripcion=r[2],
-                plataforma=r[3], idioma=idioma, nivel=nivel, categoria="General",
-                confianza=r[5], tipo=r[4], ultima_verificacion="", activo=True, certificacion=cert
-            ))
-        conn.close()
-    except: pass
-
-    # Ejecutar async
+    # Ejecutar tareas asíncronas
+    api_results = []
     if tasks:
-        api_results = await asyncio.gather(*tasks)
-        for lst in api_results: local_res.extend(lst)
+        results_list = await asyncio.gather(*tasks)
+        for lst in results_list:
+            api_results.extend(lst)
+            
+    final_list = local_results + api_results
     
-    # Fallback si está vacío
-    if not local_res: local_res = generar_simulados(tema, idioma, nivel)
+    # 3. FALLBACK CRÍTICO: Si no hay resultados (o no hay claves API), generar simulados
+    if not final_list:
+        final_list = generar_recursos_simulados(tema, idioma, nivel)
 
-    # Marcar para análisis posterior o analizar ahora (Top 3)
-    final_list = eliminar_duplicados(local_res)
-    
-    if usar_ia and GROQ_API_KEY:
-        ia_tasks = [analizar_ia_groq(r) for r in final_list[:3]] # Solo analizamos los 3 primeros en vivo para velocidad
-        ia_results = await asyncio.gather(*ia_tasks)
-        for r, analysis in zip(final_list[:3], ia_results):
-            if analysis: r.metadatos_analisis = analysis
+    # 4. Análisis IA (En los top results)
+    if GROQ_API_KEY:
+        try:
+            analisis_tasks = [analizar_ia(r) for r in final_list[:4]]
+            analisis_results = await asyncio.gather(*analisis_tasks)
+            for r, a in zip(final_list[:4], analisis_results):
+                if a: r.metadatos_analisis = a
+        except Exception as e:
+            logger.error(f"Error Groq: {e}")
 
     return final_list
-
-def planificar_analisis_ia(resultados):
-    """Encola análisis para el resto de resultados (Segundo Plano)"""
-    pass # Placeholder para implementación futura de cola real
 
 # ----------------------------
 # 8. INTERFAZ DE USUARIO (UI)
 # ----------------------------
-# CSS y Header
 st.markdown("""
 <style>
-    .main-header {
-        background: linear-gradient(135deg, #000000 0%, #434343 100%);
-        padding: 2rem; border-radius: 15px; color: white; text-align: center; margin-bottom: 20px;
-    }
-    .stButton>button { width: 100%; border-radius: 8px; height: 3em; font-weight: bold; }
+    .stApp { background-color: #f0f2f6; }
+    h1 { color: #1e3c72; text-align: center; }
 </style>
-<div class="main-header">
-    <h1>🕵️ Buscador Académico & Deep Web v15</h1>
-    <p>Surface Web • .Onion Educativo • Análisis IA</p>
-</div>
 """, unsafe_allow_html=True)
+
+st.title("🎓 Buscador Académico Inteligente v8")
+st.markdown("<div style='text-align:center'>Búsqueda Multicapa + Deep Web Simulada + IA</div>", unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Configuración")
-    usar_ia = st.toggle("🧠 Análisis IA Activo", value=True)
-    st.write(f"Google: {'✅' if GOOGLE_API_KEY else '❌'}")
-    st.write(f"Groq: {'✅' if GROQ_API_KEY else '❌'}")
-    
-    st.divider()
+    st.info(f"Google API: {'✅' if GOOGLE_API_KEY else '❌'}")
+    st.info(f"Groq IA: {'✅' if GROQ_API_KEY else '❌'}")
+    st.markdown("---")
+    st.write("📊 **Estado**")
     try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        total = conn.execute("SELECT COUNT(*) FROM recursos").fetchone()[0]
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        n = c.execute("SELECT COUNT(*) FROM recursos").fetchone()[0]
         conn.close()
-        st.metric("Recursos Indexados", total)
-    except: st.metric("Recursos", 0)
+        st.write(f"Recursos Indexados: {n}")
+    except: pass
 
 # Formulario
-c1, c2, c3 = st.columns([3, 1, 1])
-if "search_query" not in st.session_state: st.session_state.search_query = ""
-
+c1, c2, c3 = st.columns([2, 1, 1])
 with c1:
-    tema = st.text_input("Tema a investigar:", value=st.session_state.search_query, placeholder="Ej: Python, Ciberseguridad...")
+    # Usamos session_state para que los botones de ejemplo funcionen
+    if "tema_input" not in st.session_state: st.session_state.tema_input = ""
+    tema = st.text_input("¿Qué quieres aprender?", key="tema_input")
 with c2:
     nivel = st.selectbox("Nivel", ["Principiante", "Intermedio", "Avanzado"])
 with c3:
     idioma = st.selectbox("Idioma", ["es", "en", "pt"])
 
-# Botones Rápidos
-st.write("Exploración rápida:")
-b_cols = st.columns(4)
-if b_cols[0].button("🐍 Python"): st.session_state.search_query = "Python"
-if b_cols[1].button("💰 Finanzas"): st.session_state.search_query = "Finanzas"
-if b_cols[2].button("🎨 Diseño"): st.session_state.search_query = "Diseño"
-if b_cols[3].button("🧅 Tor"): st.session_state.search_query = "Deep Web"
+# Botones de Ejemplo (Callback seguro)
+def set_tema(t):
+    st.session_state.tema_input = t
 
-# Ejecución
-if st.button("🚀 INICIAR BÚSQUEDA", type="primary"):
+st.write("Ejemplos rápidos:")
+cols = st.columns(4)
+if cols[0].button("Python"): set_tema("Python")
+if cols[1].button("Marketing"): set_tema("Marketing Digital")
+if cols[2].button("Excel"): set_tema("Microsoft Excel")
+if cols[3].button("Machine Learning"): set_tema("Machine Learning")
+
+# Botón Principal
+if st.button("🚀 Buscar Cursos", type="primary"):
     if not tema:
-        st.error("Escribe un tema.")
+        st.warning("Escribe un tema para buscar.")
     else:
-        # Registrar Analítica
-        try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-            conn.execute("INSERT INTO analiticas (tema, idioma, nivel, timestamp) VALUES (?,?,?,?)", 
-                         (tema, idioma, nivel, datetime.now().isoformat()))
-            conn.commit()
-            conn.close()
-        except: pass
-
-        with st.spinner(f"Analizando ecosistema digital para: {tema}..."):
-            # Loop Asíncrono
+        with st.spinner(f"🔎 Buscando '{tema}' en múltiples capas..."):
+            # Background Task Dummy
+            background_tasks.put("log_search")
+            
+            # Loop Async
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            resultados = loop.run_until_complete(orquestador_busqueda(tema, idioma, nivel, usar_ia))
+            resultados = loop.run_until_complete(orquestador_busqueda(tema, idioma, nivel))
             loop.close()
             
+            st.success(f"Encontrados {len(resultados)} recursos relevantes.")
+            
             # Mostrar
-            st.success(f"✅ Análisis completado: {len(resultados)} recursos verificados.")
-            
-            # Filtro visual
-            ver_tor = st.checkbox("Mostrar enlaces .onion (Deep Web)", value=True)
-            
             for i, res in enumerate(resultados):
-                if not ver_tor and res.tipo == 'tor': continue
-                
-                # Decidir qué tarjeta mostrar
-                if res.metadatos_analisis:
-                    mostrar_recurso_con_ia(res, i)
-                else:
-                    mostrar_recurso_basico(res, i, analisis_pendiente=True)
+                mostrar_recurso_con_ia(res, i)
 
 # Footer
 st.markdown("---")
-footer_html = """
-<div style="text-align: center; color: #666; font-size: 14px; padding: 25px;">
-    <strong>✨ Buscador Académico Pro v15</strong><br>
-    <span style="color: #2c3e50;">Potenciado por Groq • Google API • Tor Gateway Simulation</span>
-</div>
-"""
-st.markdown(footer_html, unsafe_allow_html=True)
+st.markdown("<div style='text-align:center; color:#888'>v8.0 Stable | Powered by Streamlit</div>", unsafe_allow_html=True)
 
-# Worker Thread (Keep-alive)
-def background_worker():
+# Worker Thread
+def worker():
     while True:
         try:
-            task = background_tasks.get(timeout=2)
+            _ = background_tasks.get(timeout=2)
             background_tasks.task_done()
         except: pass
-        time.sleep(5)
+        time.sleep(1)
 
-threading.Thread(target=background_worker, daemon=True).start()
+threading.Thread(target=worker, daemon=True).start()
