@@ -20,7 +20,7 @@ pytz==2024.1
 loguru==0.7.2
 
 # IA opcional (Groq)
-groq==0.9.0
+groq==0.4.1
 
 # Seguridad y hashing
 cryptography==42.0.7
@@ -29,7 +29,4 @@ cryptography==42.0.7
 beautifulsoup4==4.12.3
 lxml==5.2.2
 
-streamlit==1.38.0
-pandas==2.2.2
-aiohttp==3.10.5
-groq==0.4.1
+
