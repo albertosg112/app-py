@@ -3,1617 +3,335 @@ import pandas as pd
 import sqlite3
 import os
 import time
-import random
-from datetime import datetime, timedelta
 import json
-import hashlib
-import requests
-import re
-from urllib.parse import quote, urlparse
-import threading
-import queue
-import concurrent.futures
-from dataclasses import dataclass, asdict
-from typing import List, Dict, Optional, Tuple, Any
-import logging
-from functools import lru_cache
-import asyncio
-import aiohttp
-from dotenv import load_dotenv
+from datetime import datetime
+from groq import Groq
 
 # ----------------------------
-# CONFIGURACIÓN AVANZADA Y LOGGING
-# ----------------------------
-# Cargar variables de entorno desde .env (si existe)
-if os.path.exists('.env'):
-    load_dotenv()
-
-# Configurar logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('buscador_cursos.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("BuscadorProfesional")
-
-# Configuración de APIs externas
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-GOOGLE_CX = os.getenv("GOOGLE_CX", "")
-BING_API_KEY = os.getenv("BING_API_KEY", "")
-BING_ENDPOINT = os.getenv("BING_ENDPOINT", "https://api.bing.microsoft.com/v7.0/search")
-DUCKDUCKGO_ENABLED = os.getenv("DUCKDUCKGO_ENABLED", "true").lower() == "true"
-TOR_ENABLED = os.getenv("TOR_ENABLED", "false").lower() == "true"
-SEMANTIC_SCHOLAR_ENABLED = os.getenv("SEMANTIC_SCHOLAR_ENABLED", "true").lower() == "true"
-
-# Sistema de caché para búsquedas frecuentes
-search_cache = {}
-cert_cache = {}
-verification_cache = {}
-
-# Cola para tareas en segundo plano
-background_tasks = queue.Queue()
-MAX_BACKGROUND_TASKS = 5
-CACHE_EXPIRATION = timedelta(hours=int(os.getenv("CACHE_EXPIRATION_HOURS", "24")))
-
-# ----------------------------
-# MODELOS DE DATOS AVANZADOS
-# ----------------------------
-@dataclass
-class Certificacion:
-    plataforma: str
-    curso: str
-    tipo: str  # "gratuito", "pago", "audit"
-    validez_internacional: bool
-    paises_validos: List[str]
-    costo_certificado: float
-    reputacion_academica: float
-    ultima_verificacion: str
-
-@dataclass
-class RecursoEducativo:
-    id: str
-    titulo: str
-    url: str
-    descripcion: str
-    plataforma: str
-    idioma: str
-    nivel: str
-    categoria: str
-    certificacion: Optional[Certificacion]
-    confianza: float
-    tipo: str  # "conocida", "oculta", "verificada", "tor", "academico"
-    ultima_verificacion: str
-    activo: bool
-    metadatos: Dict[str, Any]
-
-# ----------------------------
-# CONFIGURACIÓN INICIAL Y BASE DE DATOS AVANZADA
-# ----------------------------
-DB_PATH = "cursos_inteligentes_v2.db"
-
-def init_advanced_database():
-    """Inicializa la base de datos avanzada con todas las tablas necesarias"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Tabla de plataformas mejorada
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS plataformas_ocultas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT NOT NULL,
-            url_base TEXT NOT NULL,
-            descripcion TEXT,
-            idioma TEXT NOT NULL,
-            categoria TEXT,
-            nivel TEXT,
-            confianza REAL DEFAULT 0.7,
-            ultima_verificacion TEXT,
-            activa INTEGER DEFAULT 1,
-            tipo_certificacion TEXT DEFAULT 'audit',
-            validez_internacional BOOLEAN DEFAULT 0,
-            paises_validos TEXT DEFAULT '[]',
-            reputacion_academica REAL DEFAULT 0.5
-        )
-        ''')
-        
-        # Tabla de analíticas mejorada
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS analiticas_busquedas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tema TEXT NOT NULL,
-            idioma TEXT NOT NULL,
-            nivel TEXT,
-            timestamp TEXT NOT NULL,
-            plataforma_origen TEXT,
-            veces_mostrado INTEGER DEFAULT 0,
-            veces_clickeado INTEGER DEFAULT 0,
-            tiempo_promedio_uso REAL DEFAULT 0.0,
-            satisfaccion_usuario REAL DEFAULT 0.0
-        )
-        ''')
-        
-        # Nueva tabla: Certificaciones verificadas
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS certificaciones_verificadas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            plataforma TEXT NOT NULL,
-            curso_tema TEXT NOT NULL,
-            tipo_certificacion TEXT NOT NULL,
-            validez_internacional BOOLEAN DEFAULT 0,
-            paises_validos TEXT DEFAULT '[]',
-            costo_certificado REAL DEFAULT 0.0,
-            reputacion_academica REAL DEFAULT 0.5,
-            ultima_verificacion TEXT NOT NULL,
-            veces_verificado INTEGER DEFAULT 1
-        )
-        ''')
-        
-        # Nueva tabla: Recursos indexados
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS recursos_indexados (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT UNIQUE NOT NULL,
-            titulo TEXT,
-            descripcion TEXT,
-            plataforma TEXT,
-            idioma TEXT,
-            nivel TEXT,
-            categoria TEXT,
-            certificacion_disponible BOOLEAN DEFAULT 0,
-            confianza REAL DEFAULT 0.8,
-            ultima_verificacion TEXT,
-            veces_accedido INTEGER DEFAULT 0,
-            activo BOOLEAN DEFAULT 1,
-            metadatos TEXT
-        )
-        ''')
-        
-        # Nueva tabla: Tareas en segundo plano
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tareas_background (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tipo_tarea TEXT NOT NULL,
-            parametros TEXT NOT NULL,
-            estado TEXT DEFAULT 'pendiente',
-            resultado TEXT,
-            creado TEXT NOT NULL,
-            completado TEXT
-        )
-        ''')
-        
-        # Datos semilla mejorados con información de certificaciones
-        cursor.execute("SELECT COUNT(*) FROM plataformas_ocultas")
-        if cursor.fetchone()[0] == 0:
-            plataformas_iniciales = [
-                ("Aprende con Alf", "https://aprendeconalf.es/?s={}", "Cursos gratuitos de programación, matemáticas y ciencia de datos con ejercicios prácticos", "es", "Programación", "Intermedio", 0.85, json.dumps(["es"]), 1, 0.9),
-                ("Coursera", "https://www.coursera.org/search?query={}&free=true", "Plataforma líder con cursos universitarios gratuitos (audit mode)", "en", "General", "Avanzado", 0.95, json.dumps(["us", "uk", "ca", "au", "eu"]), 1, 0.95),
-                ("edX", "https://www.edx.org/search?tab=course&availability=current&price=free&q={}", "Cursos de Harvard, MIT y otras universidades top (modo audit gratuito)", "en", "Académico", "Avanzado", 0.92, json.dumps(["us", "uk", "ca", "au", "eu"]), 1, 0.93),
-                ("Kaggle Learn", "https://www.kaggle.com/learn/search?q={}", "Microcursos prácticos de ciencia de datos con certificados gratuitos", "en", "Data Science", "Intermedio", 0.90, json.dumps(["global"]), 1, 0.88),
-                ("freeCodeCamp", "https://www.freecodecamp.org/news/search/?query={}", "Certificados gratuitos completos en desarrollo web y ciencia de datos", "en", "Programación", "Intermedio", 0.93, json.dumps(["global"]), 1, 0.91),
-                ("PhET Simulations", "https://phet.colorado.edu/en/search?q={}", "Simulaciones interactivas de ciencias y matemáticas de la Universidad de Colorado", "en", "Ciencias", "Todos", 0.88, json.dumps(["us", "global"]), 1, 0.85),
-                ("The Programming Historian", "https://programminghistorian.org/en/lessons/?q={}", "Tutoriales académicos de programación y humanidades digitales", "en", "Programación", "Avanzado", 0.82, json.dumps(["uk", "us", "ca"]), 0, 0.80),
-                ("Domestika (Gratuito)", "https://www.domestika.org/es/search?query={}&free=1", "Cursos gratuitos de diseño creativo, algunos con certificados verificados", "es", "Diseño", "Intermedio", 0.83, json.dumps(["es", "mx", "ar", "cl"]), 1, 0.82),
-                ("Biblioteca Virtual Miguel de Cervantes", "https://www.cervantesvirtual.com/buscar/?q={}", "Recursos académicos hispanos con validez internacional", "es", "Humanidades", "Avanzado", 0.87, json.dumps(["es", "latam", "eu"]), 1, 0.85),
-                ("OER Commons", "https://www.oercommons.org/search?q={}", "Recursos educativos abiertos de instituciones globales con estándares académicos", "en", "General", "Todos", 0.89, json.dumps(["global"]), 1, 0.87)
-            ]
-            
-            for plat in plataformas_iniciales:
-                cursor.execute('''
-                INSERT INTO plataformas_ocultas 
-                (nombre, url_base, descripcion, idioma, categoria, nivel, confianza, paises_validos, validez_internacional, reputacion_academica, ultima_verificacion, activa)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                ''', plat + (datetime.now().isoformat(),))
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info("✅ Base de datos inicializada correctamente")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Error al inicializar la base de datos: {e}")
-        return False
-
-# Inicializar DB avanzada
-if not os.path.exists(DB_PATH):
-    init_advanced_database()
-else:
-    init_advanced_database()
-
-# ----------------------------
-# FUNCIONES AUXILIARES AVANZADAS
-# ----------------------------
-def get_codigo_idioma(nombre_idioma: str) -> str:
-    """Convierte nombre de idioma a código ISO"""
-    mapeo = {
-        "Español (es)": "es",
-        "Inglés (en)": "en",
-        "Portugués (pt)": "pt",
-        "es": "es",
-        "en": "en",
-        "pt": "pt"
-    }
-    return mapeo.get(nombre_idioma, "es")
-
-def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool:
-    """Valida si un recurso es educativo y gratuito"""
-    texto_completo = (url + titulo + descripcion).lower()
-    
-    # Palabras clave que indican recursos válidos
-    palabras_validas = ['curso', 'tutorial', 'aprender', 'education', 'learn', 'gratuito', 'free', 'certificado', 'certificate', 'clase', 'class', 'educación', 'educacion']
-    
-    # Palabras clave que indican recursos no válidos (pagos, comerciales)
-    palabras_invalidas = ['comprar', 'buy', 'precio', 'price', 'costo', 'only', 'premium', 'exclusive', 'paid', 'pago', 'suscripción', 'subscription', 'membership', 'register now']
-    
-    tiene_validas = any(palabra in texto_completo for palabra in palabras_validas)
-    tiene_invalidas = any(palabra in texto_completo for palabra in palabras_invalidas)
-    
-    # Dominios educativos preferidos
-    dominios_educativos = ['.edu', '.ac.', '.edu.', 'coursera', 'edx', 'khanacademy', 'freecodecamp', 'kaggle', 'udemy', 'youtube', 'aprendeconalf', '.org', '.gob', '.gov']
-    
-    dominio_valido = any(dominio in url.lower() for dominio in dominios_educativos)
-    
-    # Excluir recursos que parecen ser de pago
-    es_gratuito = 'gratuito' in texto_completo or 'free' in texto_completo or 'sin costo' in texto_completo
-    
-    return (tiene_validas or dominio_valido) and not tiene_invalidas and (es_gratuito or dominio_valido)
-
-def generar_id_unico(url: str) -> str:
-    """Genera un ID único para un recurso basado en su URL"""
-    return hashlib.md5(url.encode()).hexdigest()[:10]
-
-def determinar_nivel(texto: str, nivel_solicitado: str) -> str:
-    """Determina el nivel educativo basado en el texto"""
-    texto = texto.lower()
-    
-    if nivel_solicitado != "Cualquiera" and nivel_solicitado != "Todos":
-        return nivel_solicitado
-    
-    if any(palabra in texto for palabra in ['principiante', 'basico', 'básico', 'beginner', 'fundamentos', 'introducción', 'desde cero', 'básica', 'básicas']):
-        return "Principiante"
-    elif any(palabra in texto for palabra in ['intermedio', 'intermediate', 'práctico', 'aplicado', 'práctica', 'profesional', 'avanzado básico']):
-        return "Intermedio"
-    elif any(palabra in texto for palabra in ['avanzado', 'advanced', 'experto', 'máster', 'profesional', 'especialista', 'complejo', 'profundo']):
-        return "Avanzado"
-    else:
-        return "Intermedio"  # Nivel por defecto
-
-def determinar_categoria(tema: str) -> str:
-    """Determina la categoría educativa basada en el tema"""
-    tema = tema.lower()
-    
-    if any(palabra in tema for palabra in ['programación', 'python', 'javascript', 'web', 'desarrollo', 'coding', 'programming', 'developer', 'software', 'app', 'mobile']):
-        return "Programación"
-    elif any(palabra in tema for palabra in ['datos', 'data', 'machine learning', 'ia', 'ai', 'artificial intelligence', 'ciencia de datos', 'big data', 'analytics', 'deep learning']):
-        return "Data Science"
-    elif any(palabra in tema for palabra in ['matemáticas', 'math', 'estadística', 'statistics', 'álgebra', 'calculus', 'probability', 'álgebra', 'geometría']):
-        return "Matemáticas"
-    elif any(palabra in tema for palabra in ['diseño', 'design', 'ux', 'ui', 'gráfico', 'graphic', 'creativo', 'illustration', 'photoshop', 'figma', 'canva']):
-        return "Diseño"
-    elif any(palabra in tema for palabra in ['marketing', 'business', 'negocios', 'finanzas', 'finance', 'emprendimiento', 'startups', 'economía', 'economia', 'management']):
-        return "Negocios"
-    elif any(palabra in tema for palabra in ['idioma', 'language', 'inglés', 'english', 'español', 'portugues', 'francés', 'alemán', 'lingüística', 'linguistica']):
-        return "Idiomas"
-    else:
-        return "General"
-
-def calcular_confianza_google(item: dict) -> float:
-    """Calcula la confianza de un resultado de Google basado en múltiples factores"""
-    confianza_base = 0.7
-    
-    # Boost por dominio educativo
-    url = item.get('link', '').lower()
-    if any(dominio in url for dominio in ['.edu', '.ac.', 'coursera.org', 'edx.org', 'khanacademy.org', 'freecodecamp.org', '.gov', '.gob']):
-        confianza_base += 0.15
-    elif any(dominio in url for dominio in ['udemy.com', 'domestika.org', 'skillshare.com']):
-        confianza_base += 0.05
-    
-    # Boost por contenido detallado
-    snippet = item.get('snippet', '')
-    if len(snippet) > 100:
-        confianza_base += 0.05
-    
-    # Boost por posición en resultados
-    rank = item.get('rank', 1)
-    if rank == 1:
-        confianza_base += 0.1
-    elif rank == 2:
-        confianza_base += 0.05
-    
-    return min(confianza_base, 0.95)  # Límite máximo 0.95
-
-def extraer_plataforma(url: str) -> str:
-    """Extrae el nombre de la plataforma de una URL"""
-    dominio = urlparse(url).netloc.lower()
-    
-    if 'coursera' in dominio:
-        return 'Coursera'
-    elif 'edx' in dominio:
-        return 'edX'
-    elif 'khanacademy' in dominio:
-        return 'Khan Academy'
-    elif 'freecodecamp' in dominio:
-        return 'freeCodeCamp'
-    elif 'kaggle' in dominio:
-        return 'Kaggle'
-    elif 'udemy' in dominio:
-        return 'Udemy'
-    elif 'youtube' in dominio:
-        return 'YouTube'
-    elif 'aprendeconalf' in dominio:
-        return 'Aprende con Alf'
-    elif 'programminghistorian' in dominio:
-        return 'Programming Historian'
-    elif 'cervantesvirtual' in dominio:
-        return 'Biblioteca Cervantes'
-    elif '.edu' in dominio or '.ac.' in dominio or '.gob' in dominio or '.gov' in dominio:
-        return 'Institución Académica'
-    else:
-        partes = dominio.split('.')
-        if len(partes) > 1:
-            return partes[-2].title()
-        return dominio.title()
-
-# ----------------------------
-# FUNCIONES DE BÚSQUEDA MULTICAPA
-# ----------------------------
-async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    """Búsqueda en Google Custom Search API con manejo de errores mejorado"""
-    try:
-        if not GOOGLE_API_KEY or not GOOGLE_CX:
-            logger.warning("Google API Key o CX no configurados. Saltando búsqueda en Google.")
-            return []
-        
-        # Construir query educativo optimizado
-        query_base = f"{tema} curso gratuito certificado"
-        if nivel != "Cualquiera" and nivel != "Todos":
-            query_base += f" nivel {nivel.lower()}"
-        
-        url = "https://www.googleapis.com/customsearch/v1"
-        params = {
-            'key': GOOGLE_API_KEY,
-            'cx': GOOGLE_CX,
-            'q': query_base,
-            'num': 5,  # Limitar resultados por rendimiento
-            'lr': f'lang_{idioma}',
-            'cr': 'countryES' if idioma == 'es' else 'countryUS'
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=10) as response:
-                if response.status == 429:
-                    logger.warning("Límite de peticiones de Google API alcanzado.")
-                    return []
-                elif response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Error Google API ({response.status}): {error_text}")
-                    return []
-                
-                data = await response.json()
-                
-                if 'items' not in data:
-                    return []
-                
-                resultados = []
-                for item in data['items']:
-                    url = item.get('link', '')
-                    titulo = item.get('title', '')
-                    descripcion = item.get('snippet', '')
-                    
-                    # Filtrar resultados no educativos
-                    if not es_recurso_educativo_valido(url, titulo, descripcion):
-                        continue
-                    
-                    # Calcular nivel y confianza
-                    nivel_calculado = determinar_nivel(texto=titulo + " " + descripcion, nivel_solicitado=nivel)
-                    confianza = calcular_confianza_google(item)
-                    
-                    recurso = RecursoEducativo(
-                        id=generar_id_unico(url),
-                        titulo=titulo,
-                        url=url,
-                        descripcion=descripcion,
-                        plataforma=extraer_plataforma(url),
-                        idioma=idioma,
-                        nivel=nivel_calculado,
-                        categoria=determinar_categoria(tema),
-                        certificacion=None,
-                        confianza=confianza,
-                        tipo="verificada",
-                        ultima_verificacion=datetime.now().isoformat(),
-                        activo=True,
-                        metadatos={
-                            'google_rank': item.get('rank', 1),
-                            'snippet_length': len(descripcion),
-                            'fuente': 'google_api'
-                        }
-                    )
-                    
-                    resultados.append(recurso)
-                
-                return resultados
-                
-    except asyncio.TimeoutError:
-        logger.error("Timeout en petición a Google API")
-        return []
-    except Exception as e:
-        logger.error(f"Error inesperado en Google API: {e}")
-        return []
-
-async def buscar_en_duckduckgo(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    """Búsqueda en DuckDuckGo API para resultados no sesgados"""
-    try:
-        if not DUCKDUCKGO_ENABLED:
-            return []
-        
-        # Construir query para DuckDuckGo
-        query = f"{tema} curso gratuito certificado"
-        if nivel != "Cualquiera" and nivel != "Todos":
-            query += f" nivel {nivel.lower()}"
-        
-        url = "https://duckduckgo-api.vercel.app"
-        params = {'q': query, 'format': 'json', 'pretty': '1'}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=10) as response:
-                if response.status != 200:
-                    return []
-                
-                data = await response.json()
-                
-                resultados = []
-                if 'Results' in data:
-                    for result in data['Results'][:3]:  # Limitar a 3 resultados
-                        url = result.get('FirstURL', '')
-                        titulo = result.get('Text', '')
-                        descripcion = result.get('Result', '')
-                        
-                        if not es_recurso_educativo_valido(url, titulo, descripcion):
-                            continue
-                        
-                        recurso = RecursoEducativo(
-                            id=generar_id_unico(url),
-                            titulo=titulo,
-                            url=url,
-                            descripcion=descripcion,
-                            plataforma=extraer_plataforma(url),
-                            idioma=idioma,
-                            nivel=determinar_nivel(texto=titulo + " " + descripcion, nivel_solicitado=nivel),
-                            categoria=determinar_categoria(tema),
-                            certificacion=None,
-                            confianza=0.75,  # Confianza inicial para DDG
-                            tipo="verificada",
-                            ultima_verificacion=datetime.now().isoformat(),
-                            activo=True,
-                            metadatos={'fuente': 'duckduckgo'}
-                        )
-                        
-                        resultados.append(recurso)
-                
-                return resultados
-                
-    except Exception as e:
-        logger.error(f"Error en búsqueda DuckDuckGo: {e}")
-        return []
-
-def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    """Búsqueda en plataformas conocidas según el idioma"""
-    resultados = []
-    
-    if idioma == "es":
-        plataformas = {
-            "youtube": {"nombre": "YouTube", "url": f"https://www.youtube.com/results?search_query=curso+completo+gratis+{tema.replace(' ', '+')}", "icono": "📺", "niveles": ["Principiante", "Intermedio"]},
-            "coursera": {"nombre": "Coursera (Español)", "url": f"https://www.coursera.org/search?query={tema.replace(' ', '%20')}&languages=es", "icono": "🎓", "niveles": ["Intermedio", "Avanzado"]},
-            "udemy": {"nombre": "Udemy (Español)", "url": f"https://www.udemy.com/courses/search/?price=price-free&lang=es&q={tema.replace(' ', '%20')}", "icono": "💻", "niveles": ["Principiante", "Intermedio"]},
-            "khan": {"nombre": "Khan Academy (Español)", "url": f"https://es.khanacademy.org/search?page_search_query={tema.replace(' ', '%20')}", "icono": "📚", "niveles": ["Principiante", "Intermedio"]}
-        }
-    elif idioma == "pt":
-        plataformas = {
-            "youtube": {"nombre": "YouTube", "url": f"https://www.youtube.com/results?search_query=curso+completo+gratis+{tema.replace(' ', '+')}", "icono": "📺", "niveles": ["Principiante", "Intermedio"]},
-            "coursera": {"nombre": "Coursera (Portugués)", "url": f"https://www.coursera.org/search?query={tema.replace(' ', '%20')}&languages=pt", "icono": "🎓", "niveles": ["Intermedio", "Avanzado"]},
-            "udemy": {"nombre": "Udemy (Português)", "url": f"https://www.udemy.com/courses/search/?price=price-free&lang=pt&q={tema.replace(' ', '%20')}", "icono": "💻", "niveles": ["Principiante", "Intermedio"]},
-            "khan": {"nombre": "Khan Academy (Português)", "url": f"https://pt.khanacademy.org/search?page_search_query={tema.replace(' ', '%20')}", "icono": "📚", "niveles": ["Principiante", "Intermedio"]}
-        }
-    else:  # Inglés (default)
-        plataformas = {
-            "youtube": {"nombre": "YouTube", "url": f"https://www.youtube.com/results?search_query=curso+completo+gratis+{tema.replace(' ', '+')}", "icono": "📺", "niveles": ["Principiante", "Intermedio"]},
-            "coursera": {"nombre": "Coursera", "url": f"https://www.coursera.org/search?query={tema.replace(' ', '%20')}&free=true", "icono": "🎓", "niveles": ["Intermedio", "Avanzado"]},
-            "edx": {"nombre": "edX", "url": f"https://www.edx.org/search?tab=course&availability=current&price=free&q={tema.replace(' ', '%20')}", "icono": "🔬", "niveles": ["Avanzado"]},
-            "udemy": {"nombre": "Udemy", "url": f"https://www.udemy.com/courses/search/?price=price-free&q={tema.replace(' ', '%20')}", "icono": "💻", "niveles": ["Principiante", "Intermedio"]},
-            "freecodecamp": {"nombre": "freeCodeCamp", "url": f"https://www.freecodecamp.org/news/search/?query={tema.replace(' ', '%20')}", "icono": "👨‍💻", "niveles": ["Intermedio", "Avanzado"]},
-            "khan": {"nombre": "Khan Academy", "url": f"https://www.khanacademy.org/search?page_search_query={tema.replace(' ', '%20')}", "icono": "📚", "niveles": ["Principiante"]}
-        }
-
-    # Seleccionar niveles permitidos
-    if nivel == "Cualquiera" or nivel == "Todos":
-        niveles_permitidos = ["Principiante", "Intermedio", "Avanzado"]
-    else:
-        niveles_permitidos = [nivel]
-
-    # Generar resultados realistas
-    for nombre_plataforma, datos in plataformas.items():
-        if len(resultados) >= 4:
-            break
-            
-        # Verificar si el nivel es compatible
-        niveles_compatibles = [n for n in datos['niveles'] if n in niveles_permitidos]
-        if not niveles_compatibles:
-            continue
-            
-        nivel_actual = random.choice(niveles_compatibles)
-
-        # Títulos realistas basados en el tema
-        titulos_realistas = {
-            "python": ["Curso Completo de Python", "Python para Data Science", "Automatización con Python", "Python desde Cero"],
-            "machine learning": ["Machine Learning Completo", "Deep Learning con TensorFlow", "Ciencia de Datos con Python", "ML para Principiantes"],
-            "marketing": ["Marketing Digital Completo", "SEO Avanzado", "Email Marketing Profesional", "Marketing en Redes Sociales"],
-            "ingles": ["Inglés desde Cero", "Inglés para Negocios", "Gramática Inglesa Explicada", "Conversación en Inglés"],
-            "diseño": ["Diseño Gráfico Completo", "UI/UX Design", "Diseño de Logotipos", "Adobe Creative Suite"],
-            "finanzas": ["Finanzas Personales", "Inversión para Principiantes", "Criptomonedas y Blockchain", "Análisis Financiero"],
-            "data": ["Análisis de Datos con Python", "Visualización de Datos", "SQL para Data Science", "Big Data Fundamentals"]
-        }
-        
-        tema_minus = tema.lower()
-        titulo_base = random.choice([
-            f"Curso Completo de {tema}",
-            f"{tema} desde Cero",
-            f"Aprende {tema} en 30 Días",
-            f"Domina {tema} con Proyectos Prácticos"
-        ])
-        
-        # Buscar coincidencias en los títulos realistas
-        for clave, titulos in titulos_realistas.items():
-            if clave in tema_minus:
-                titulo_base = random.choice(titulos)
-                break
-        
-        titulo = f"{datos['icono']} {titulo_base} en {datos['nombre']}"
-        
-        # Descripciones realistas
-        descripciones = {
-            "Principiante": f"Curso introductorio perfecto para quienes empiezan en {tema}. Sin conocimientos previos necesarios.",
-            "Intermedio": f"Curso práctico para profundizar en {tema} con ejercicios y proyectos reales.",
-            "Avanzado": f"Contenido especializado para profesionales que buscan dominar conceptos avanzados de {tema}."
-        }
-        
-        resultados.append({
-            "nivel": nivel_actual,
-            "titulo": titulo,
-            "plataforma": datos["nombre"],
-            "url": datos["url"],
-            "descripcion": descripciones.get(nivel_actual, f"Recurso educativo verificado para nivel {nivel_actual} en {tema}."),
-            "tipo": "conocida",
-            "confianza": 0.9 if "coursera" in nombre_plataforma or "edx" in nombre_plataforma else 0.8
-        })
-    
-    # Convertir a objetos RecursoEducativo
-    recursos = []
-    for resultado in resultados:
-        recurso = RecursoEducativo(
-            id=generar_id_unico(resultado["url"]),
-            titulo=resultado["titulo"],
-            url=resultado["url"],
-            descripcion=resultado["descripcion"],
-            plataforma=resultado["plataforma"],
-            idioma=idioma,
-            nivel=resultado["nivel"],
-            categoria=determinar_categoria(tema),
-            certificacion=None,
-            confianza=resultado.get("confianza", 0.8),
-            tipo=resultado["tipo"],
-            ultima_verificacion=datetime.now().isoformat(),
-            activo=True,
-            metadatos={"fuente": "plataformas_conocidas"}
-        )
-        recursos.append(recurso)
-    
-    return recursos
-
-def obtener_plataformas_ocultas(idioma: str, tema: str, nivel_seleccionado: str) -> List[RecursoEducativo]:
-    """Obtiene plataformas ocultas de la base de datos"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        query = '''
-        SELECT nombre, url_base, descripcion, nivel, confianza, categoria
-        FROM plataformas_ocultas 
-        WHERE activa = 1 AND idioma = ?
-        '''
-        params = [idioma]
-        
-        if nivel_seleccionado != "Cualquiera" and nivel_seleccionado != "Todos":
-            query += " AND (nivel = ? OR nivel = 'Todos')"
-            params.append(nivel_seleccionado)
-        
-        query += " ORDER BY confianza DESC LIMIT 4"
-        
-        cursor.execute(query, params)
-        resultados = cursor.fetchall()
-        conn.close()
-        
-        recursos = []
-        for r in resultados:
-            url_completa = r[1].format(tema.replace(' ', '+'))
-            recurso = RecursoEducativo(
-                id=generar_id_unico(url_completa),
-                titulo=f"💡 {r[0]} - {tema}",
-                url=url_completa,
-                descripcion=r[2],
-                plataforma=r[0],
-                idioma=idioma,
-                nivel=r[3],
-                categoria=r[5],
-                certificacion=None,
-                confianza=r[4],
-                tipo="oculta",
-                ultima_verificacion=datetime.now().isoformat(),
-                activo=True,
-                metadatos={"fuente": "plataformas_ocultas", "confianza_db": r[4]}
-            )
-            recursos.append(recurso)
-        
-        return recursos
-        
-    except Exception as e:
-        logger.error(f"Error al obtener plataformas ocultas: {e}")
-        return []
-
-async def buscar_recursos_multicapa(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    """Sistema de búsqueda avanzado que combina múltiples fuentes"""
-    
-    # Verificar caché primero
-    cache_key = f"busqueda_{tema}_{idioma}_{nivel}"
-    if cache_key in search_cache:
-        cached_data = search_cache[cache_key]
-        if datetime.now() - cached_data['timestamp'] < CACHE_EXPIRATION:
-            return cached_data['resultados']
-    
-    resultados = []
-    codigo_idioma = get_codigo_idioma(idioma)
-    
-    # 1. Búsqueda en plataformas conocidas
-    resultados_conocidas = buscar_en_plataformas_conocidas(tema, codigo_idioma, nivel)
-    resultados.extend(resultados_conocidas)
-    
-    # 2. Búsqueda en plataformas ocultas
-    resultados_ocultas = obtener_plataformas_ocultas(codigo_idioma, tema, nivel)
-    resultados.extend(resultados_ocultas)
-    
-    # 3. Búsqueda en Google API (si está configurada)
-    if GOOGLE_API_KEY and GOOGLE_CX:
-        resultados_google = await buscar_en_google_api(tema, codigo_idioma, nivel)
-        resultados.extend(resultados_google)
-    
-    # 4. Búsqueda en DuckDuckGo (si está habilitado)
-    if DUCKDUCKGO_ENABLED:
-        resultados_duckduckgo = await buscar_en_duckduckgo(tema, codigo_idioma, nivel)
-        resultados.extend(resultados_duckduckgo)
-    
-    # 5. Eliminar duplicados y ordenar por confianza
-    resultados = eliminar_duplicados(resultados)
-    resultados.sort(key=lambda x: x.confianza, reverse=True)
-    
-    # 6. Limitar resultados para mejor rendimiento
-    resultados_finales = resultados[:12]  # Máximo 12 resultados
-    
-    # Guardar en caché
-    search_cache[cache_key] = {
-        'resultados': resultados_finales,
-        'timestamp': datetime.now()
-    }
-    
-    return resultados_finales
-
-def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEducativo]:
-    """Elimina resultados duplicados basados en URL"""
-    urls_vistas = set()
-    resultados_unicos = []
-    
-    for recurso in resultados:
-        if recurso.url not in urls_vistas:
-            urls_vistas.add(recurso.url)
-            resultados_unicos.append(recurso)
-    
-    return resultados_unicos
-
-# ----------------------------
-# SISTEMA DE TAREAS EN SEGUNDO PLANO
-# ----------------------------
-def iniciar_tareas_background():
-    """Inicia el sistema de tareas en segundo plano"""
-    def worker():
-        while True:
-            try:
-                tarea = background_tasks.get(timeout=60)
-                if tarea is None:
-                    break
-                
-                logger.info(f"Procesando tarea en background: {tarea}")
-                
-                # Procesar tarea según tipo
-                tipo_tarea = tarea.get('tipo')
-                parametros = tarea.get('parametros', {})
-                
-                if tipo_tarea == 'indexar_recursos':
-                    indexar_recursos_background(**parametros)
-                elif tipo_tarea == 'verificar_certificaciones':
-                    verificar_certificaciones_background(**parametros)
-                
-                background_tasks.task_done()
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Error en tarea background: {e}")
-                background_tasks.task_done()
-    
-    # Iniciar worker threads
-    num_workers = min(MAX_BACKGROUND_TASKS, os.cpu_count() or 1)
-    for _ in range(num_workers):
-        thread = threading.Thread(target=worker, daemon=True)
-        thread.start()
-    
-    logger.info(f"✅ Sistema de tareas en background iniciado con {num_workers} workers")
-
-def planificar_indexacion_recursos(temas: List[str], idiomas: List[str]):
-    """Planifica la indexación de recursos en segundo plano"""
-    tarea = {
-        'tipo': 'indexar_recursos',
-        'parametros': {
-            'temas': temas,
-            'idiomas': idiomas,
-            'profundidad': 2
-        }
-    }
-    background_tasks.put(tarea)
-    logger.info(f"Tarea de indexación planificada para {len(temas)} temas y {len(idiomas)} idiomas")
-
-def indexar_recursos_background(temas: List[str], idiomas: List[str], profundidad: int = 2):
-    """Indexa recursos educativos en segundo plano"""
-    logger.info(f"Iniciando indexación de recursos para temas: {temas}, idiomas: {idiomas}")
-    
-    try:
-        for tema in temas:
-            for idioma in idiomas:
-                # Realizar búsqueda síncrona (no podemos usar asyncio en threads)
-                resultados = buscar_en_plataformas_conocidas(tema, idioma, "Cualquiera")
-                resultados.extend(obtener_plataformas_ocultas(idioma, tema, "Cualquiera"))
-                
-                # Guardar resultados en base de datos
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                
-                for recurso in resultados:
-                    try:
-                        cursor.execute('''
-                        INSERT OR REPLACE INTO recursos_indexados
-                        (url, titulo, descripcion, plataforma, idioma, nivel, categoria, 
-                         certificacion_disponible, confianza, ultima_verificacion, activo, metadatos)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            recurso.url,
-                            recurso.titulo,
-                            recurso.descripcion,
-                            recurso.plataforma,
-                            recurso.idioma,
-                            recurso.nivel,
-                            recurso.categoria,
-                            recurso.certificacion is not None,
-                            recurso.confianza,
-                            recurso.ultima_verificacion,
-                            recurso.activo,
-                            json.dumps(getattr(recurso, 'metadatos', {}))
-                        ))
-                    except Exception as e:
-                        logger.warning(f"Error al insertar recurso en DB: {e}")
-                        continue
-                
-                conn.commit()
-                conn.close()
-                
-                # Pausa para no sobrecargar
-                time.sleep(1)
-        
-        logger.info(f"✅ Indexación completada para {len(temas) * len(idiomas)} combinaciones")
-        
-    except Exception as e:
-        logger.error(f"❌ Error en indexación background: {e}")
-
-# ----------------------------
-# ESTILOS RESPONSIVE MEJORADOS
+# 1. CONFIGURACIÓN INICIAL
 # ----------------------------
 st.set_page_config(
-    page_title="🎓 Buscador Profesional de Cursos - IA Avanzada",
-    page_icon="🎓",
+    page_title="🎓 Buscador IA con Groq",
+    page_icon="🧠",
     layout="wide",
-    initial_sidebar_state="collapsed",
-    menu_items={
-        'Get Help': 'https://github.com/tuusuario/buscador-cursos-ia',
-        'Report a bug': "https://github.com/tuusuario/buscador-cursos-ia/issues",
-        'About': "# Buscador Profesional de Cursos\nSistema de búsqueda inteligente con IA avanzada"
-    }
+    initial_sidebar_state="collapsed"
 )
 
+DB_PATH = "cursos_inteligentes_v2.db"
+
+# ----------------------------
+# 2. GESTIÓN DE BASE DE DATOS (Restaurada)
+# ----------------------------
+def init_database():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Tabla de plataformas "tesoros ocultos" (Hardcoded curated list)
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS plataformas_ocultas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL,
+        url_base TEXT NOT NULL,
+        descripcion TEXT,
+        idioma TEXT,
+        nivel TEXT,
+        activa INTEGER DEFAULT 1
+    )
+    ''')
+    
+    # Tabla para analíticas de búsquedas
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS analiticas_busquedas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tema TEXT,
+        idioma TEXT,
+        nivel TEXT,
+        timestamp TEXT,
+        origen TEXT
+    )
+    ''')
+    
+    # Datos semilla si está vacía
+    cursor.execute("SELECT COUNT(*) FROM plataformas_ocultas")
+    if cursor.fetchone()[0] == 0:
+        seed_data = [
+            ("FreeCodeCamp", "https://www.freecodecamp.org/news/search/?query={}", "Certificaciones completas de programación", "en", "Todos"),
+            ("Aprende con Alf", "https://aprendeconalf.es/?s={}", "Recursos excelentes de Python y Pandas", "es", "Intermedio"),
+            ("Harvard CS50", "https://cs50.harvard.edu/x/", "El mejor curso de introducción a CS del mundo", "en", "Principiante"),
+            ("Google Activate", "https://learndigital.withgoogle.com/activate/courses", "Cursos de marketing digital y desarrollo profesional", "es", "Principiante"),
+            ("Kaggle Courses", "https://www.kaggle.com/learn", "Micro-cursos prácticos de IA y Data", "en", "Intermedio")
+        ]
+        cursor.executemany("INSERT INTO plataformas_ocultas (nombre, url_base, descripcion, idioma, nivel) VALUES (?, ?, ?, ?, ?)", seed_data)
+        conn.commit()
+    
+    conn.close()
+
+if not os.path.exists(DB_PATH):
+    init_database()
+else:
+    init_database() # Asegura que las tablas existan
+
+# ----------------------------
+# 3. ESTILOS CSS (Restaurados y Mejorados)
+# ----------------------------
 st.markdown("""
 <style>
-    /* Optimización móvil completa - Mejorado */
-    @media (max-width: 768px) {
-        .main-header {
-            padding: 1rem !important;
-            margin-bottom: 1.5rem !important;
-            background: linear-gradient(135deg, #4b6cb7 0%, #182848 100%) !important;
-        }
-        .main-header h1 {
-            font-size: 1.8rem !important;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-        .main-header p {
-            font-size: 1rem !important;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
-        }
-        .search-form {
-            padding: 15px !important;
-            margin-bottom: 20px !important;
-            background: white !important;
-            border-radius: 15px !important;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1) !important;
-        }
-        .stTextInput > div > div > input {
-            font-size: 16px !important;
-            padding: 12px 15px !important;
-            border-radius: 10px !important;
-            border: 2px solid #e0e0e0 !important;
-        }
-        .stSelectbox > div > div {
-            font-size: 16px !important;
-            padding: 12px 15px !important;
-            border-radius: 10px !important;
-        }
-        .stButton > button {
-            height: 50px !important;
-            font-size: 18px !important;
-            padding: 0 20px !important;
-            background: linear-gradient(to right, #6a11cb 0%, #2575fc 100%) !important;
-            border-radius: 12px !important;
-        }
-        .metric-card {
-            padding: 12px !important;
-            margin-bottom: 10px !important;
-            border-radius: 10px !important;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important;
-        }
-        .resultado-card {
-            padding: 15px !important;
-            margin-bottom: 15px !important;
-            border-radius: 12px !important;
-            transition: all 0.3s ease !important;
-        }
-        .resultado-card h3 {
-            font-size: 1.2rem !important;
-            margin-bottom: 8px !important;
-        }
-        .resultado-card p {
-            font-size: 0.95rem !important;
-            line-height: 1.4 !important;
-        }
-        .sidebar-content {
-            padding: 15px !important;
-        }
-        .idioma-selector {
-            padding: 12px !important;
-            margin: 8px 0 !important;
-            border-radius: 10px !important;
-        }
-        .certificado-badge {
-            font-size: 0.8rem !important;
-            padding: 4px 8px !important;
-        }
-    }
-    
-    /* Estilo desktop - Profesional */
+    /* Header con degradado */
     .main-header {
-        background: linear-gradient(135deg, #4b6cb7 0%, #182848 100%);
+        background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
         color: white;
         padding: 2rem;
-        border-radius: 20px;
-        margin-bottom: 2.5rem;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.25);
-        position: relative;
-        overflow: hidden;
-        border: 1px solid rgba(255,255,255,0.1);
-    }
-    
-    .main-header::before {
-        content: '';
-        position: absolute;
-        top: -50%;
-        left: -50%;
-        width: 200%;
-        height: 200%;
-        background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 70%);
-        transform: rotate(30deg);
-    }
-    
-    .main-header h1 {
-        font-size: 2.8rem;
-        font-weight: 700;
-        margin-bottom: 1rem;
-        position: relative;
-        text-shadow: 3px 3px 6px rgba(0,0,0,0.3);
-        background: linear-gradient(to right, #fff, #e0e0ff);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-    }
-    
-    .main-header p {
-        font-size: 1.4rem;
-        opacity: 0.95;
-        position: relative;
-        max-width: 800px;
-        line-height: 1.5;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-    }
-    
-    .search-form {
-        background: white;
-        padding: 30px;
-        border-radius: 20px;
-        box-shadow: 0 8px 30px rgba(0,0,0,0.15);
-        margin-bottom: 35px;
-        border: 1px solid #e0e0e0;
-        position: relative;
-        z-index: 10;
-    }
-    
-    .search-form::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 5px;
-        background: linear-gradient(to right, #6a11cb, #2575fc);
-        border-radius: 20px 20px 0 0;
-    }
-    
-    .stButton button {
-        background: linear-gradient(to right, #6a11cb 0%, #2575fc 100%);
-        color: white;
-        border: none;
         border-radius: 15px;
-        padding: 15px 30px;
-        font-size: 18px;
-        font-weight: bold;
-        width: 100%;
-        transition: all 0.4s ease;
-        box-shadow: 0 4px 15px rgba(106, 17, 203, 0.4);
-        position: relative;
-        overflow: hidden;
-        letter-spacing: 0.5px;
+        margin-bottom: 2rem;
+        text-align: center;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
     }
     
-    .stButton button:hover {
-        transform: translateY(-3px) scale(1.02);
-        box-shadow: 0 8px 25px rgba(106, 17, 203, 0.6);
-        background: linear-gradient(to right, #7b2cbf 0%, #3a86ff 100%);
-    }
-    
-    .stButton button:active {
-        transform: translateY(1px);
-    }
-    
-    .stButton button::after {
-        content: '';
-        position: absolute;
-        top: -50%;
-        left: -60%;
-        width: 20px;
-        height: 200%;
-        background: rgba(255,255,255,0.3);
-        transform: rotate(25deg);
-        transition: all 0.8s;
-    }
-    
-    .stButton button:hover::after {
-        left: 120%;
-    }
-    
+    /* Tarjetas de resultados */
     .resultado-card {
-        border-radius: 15px;
-        padding: 25px;
-        margin-bottom: 25px;
         background: white;
-        box-shadow: 0 5px 20px rgba(0,0,0,0.08);
-        transition: all 0.4s ease;
+        padding: 20px;
+        border-radius: 12px;
         border-left: 6px solid #4CAF50;
-        position: relative;
-        overflow: hidden;
-        border: 1px solid #f0f0f0;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        margin-bottom: 15px;
+        transition: transform 0.2s;
+        color: #333;
     }
-    
     .resultado-card:hover {
-        transform: translateY(-5px) translateX(5px);
-        box-shadow: 0 15px 35px rgba(0,0,0,0.15);
-        border-left-width: 8px;
+        transform: translateY(-5px);
+        box-shadow: 0 8px 20px rgba(0,0,0,0.15);
     }
+    .card-ia { border-left-color: #764ba2 !important; background-color: #fcfaff; }
+    .card-oculta { border-left-color: #FF9800 !important; background-color: #fffbf0; }
     
-    .resultado-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 4px;
-        background: linear-gradient(to right, #6a11cb, #2575fc);
-    }
-    
-    .nivel-principiante { border-left-color: #2196F3 !important; background: linear-gradient(90deg, rgba(33,150,243,0.05), transparent) !important; }
-    .nivel-intermedio { border-left-color: #4CAF50 !important; background: linear-gradient(90deg, rgba(76,175,80,0.05), transparent) !important; }
-    .nivel-avanzado { border-left-color: #FF9800 !important; background: linear-gradient(90deg, rgba(255,152,0,0.05), transparent) !important; }
-    
-    .plataforma-oculta {
-        background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
-        border-left-color: #FF6B35 !important;
-        box-shadow: 0 5px 15px rgba(255,107,53,0.2) !important;
-    }
-    
-    .con-certificado {
-        border-left-color: #9C27B0 !important;
-        background: linear-gradient(90deg, rgba(156,39,176,0.08), transparent) !important;
-        box-shadow: 0 5px 20px rgba(156,39,176,0.15) !important;
-    }
-    
-    .metric-card {
-        background: white;
-        padding: 20px;
-        border-radius: 15px;
-        text-align: center;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.08);
-        transition: all 0.3s ease;
-        border: 2px solid #f8f9fa;
-        position: relative;
-        overflow: hidden;
-    }
-    
-    .metric-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(0,0,0,0.12);
-        border-color: #e9ecef;
-    }
-    
-    .metric-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 4px;
-        height: 100%;
-        background: linear-gradient(to bottom, #6a11cb, #2575fc);
-    }
-    
-    .idioma-selector {
-        background: #f8f9fa;
-        padding: 20px;
-        border-radius: 15px;
-        margin: 15px 0;
-        border: 1px solid #e9ecef;
-        transition: all 0.3s ease;
-    }
-    
-    .idioma-selector:hover {
-        background: #f1f3f5;
-        transform: translateX(5px);
-        border-color: #dee2e6;
-    }
-    
-    .certificado-badge {
-        display: inline-block;
-        padding: 5px 12px;
-        border-radius: 20px;
+    /* Botones */
+    .stButton > button {
+        width: 100%;
+        border-radius: 8px;
         font-weight: bold;
-        font-size: 0.9rem;
-        margin-top: 10px;
+        height: 3em;
+    }
+    
+    /* Métricas */
+    .metric-container {
+        background: #f0f2f6;
+        padding: 15px;
+        border-radius: 10px;
         text-align: center;
-        transition: all 0.3s ease;
-    }
-    
-    .certificado-gratuito {
-        background: linear-gradient(to right, #4CAF50, #8BC34A);
-        color: white;
-        box-shadow: 0 2px 8px rgba(76,175,80,0.3);
-    }
-    
-    .certificado-internacional {
-        background: linear-gradient(to right, #2196F3, #3F51B5);
-        color: white;
-        box-shadow: 0 2px 8px rgba(33,150,243,0.3);
-    }
-    
-    .fade-in {
-        animation: fadeIn 0.6s ease forwards;
-    }
-    
-    @keyframes fadeIn {
-        from { 
-            opacity: 0; 
-            transform: translateY(20px);
-            filter: blur(5px);
-        }
-        to { 
-            opacity: 1; 
-            transform: translateY(0);
-            filter: blur(0);
-        }
-    }
-    
-    .status-badge {
-        display: inline-block;
-        padding: 3px 10px;
-        border-radius: 15px;
-        font-size: 0.8rem;
-        font-weight: bold;
-        margin-left: 10px;
-    }
-    
-    .status-activo {
-        background: linear-gradient(to right, #4CAF50, #8BC34A);
-        color: white;
-    }
-    
-    .status-verificado {
-        background: linear-gradient(to right, #2196F3, #3F51B5);
-        color: white;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# INICIAR SISTEMA EN SEGUNDO PLANO
-# ----------------------------
-iniciar_tareas_background()
-
-# Planificar tareas de indexación para temas populares
-temas_populares = ["Python", "Machine Learning", "Data Science", "Diseño UX", "Marketing Digital", "Finanzas"]
-idiomas_indexacion = ["es", "en", "pt"]
-planificar_indexacion_recursos(temas_populares, idiomas_indexacion)
-
-# ----------------------------
-# BARRA LATERAL OPTIMIZADA - VERSION PROFESIONAL
+# 4. BARRA LATERAL (Config y Analíticas)
 # ----------------------------
 with st.sidebar:
-    st.markdown('<div class="sidebar-content">', unsafe_allow_html=True)
+    st.image("https://cdn-icons-png.flaticon.com/512/2103/2103633.png", width=80)
+    st.title("⚙️ Configuración IA")
     
-    # Logo profesional con animación
-    col_logo, col_title = st.columns([1, 2])
-    with col_logo:
-        st.markdown("""
-        <div style="background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%); 
-                   width: 60px; height: 60px; border-radius: 20px; display: flex; 
-                   align-items: center; justify-content: center; margin: 10px auto;">
-            <span style="color: white; font-size: 28px; font-weight: bold;">🎓</span>
-        </div>
-        """, unsafe_allow_html=True)
+    # Input para API Key de Groq
+    api_key = st.text_input("🔑 Groq API Key", type="password", help="Pega tu API Key de Groq aquí para activar la IA")
+    if not api_key:
+        st.warning("⚠️ Sin API Key, el sistema usará búsqueda básica.")
+        st.markdown("[Obtener API Key gratis](https://console.groq.com/keys)")
+
+    st.markdown("---")
+    st.subheader("📊 Analíticas Rápidas")
     
-    with col_title:
-        st.markdown("""
-        <div style="margin-top: 15px;">
-            <h3 style="color: #2c3e50; margin: 0; font-size: 1.2rem;">🧠 IA Avanzada</h3>
-            <p style="color: #7f8c8d; margin: 0; font-size: 0.9rem; font-weight: 500;">Sistema Inteligente</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("### 📊 **Estadísticas en Tiempo Real**")
-    
+    # Consultar DB para mostrar estadísticas reales
     try:
         conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Estadísticas mejoradas
-        cursor.execute("SELECT COUNT(*) FROM analiticas_busquedas")
-        total_busquedas = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM recursos_indexados WHERE activo = 1")
-        total_recursos = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT tema, COUNT(*) as conteo 
-            FROM analiticas_busquedas 
-            GROUP BY tema 
-            ORDER BY conteo DESC 
-            LIMIT 1
-        """)
-        tema_popular_data = cursor.fetchone()
-        tema_popular = tema_popular_data[0] if tema_popular_data else "Python"
-        
-        cursor.execute("SELECT COUNT(*) FROM certificaciones_verificadas WHERE validez_internacional = 1")
-        certificados_internacionales = cursor.fetchone()[0]
-        
+        c = conn.cursor()
+        total = c.execute("SELECT COUNT(*) FROM analiticas_busquedas").fetchone()[0]
+        top_tema = c.execute("SELECT tema, COUNT(*) as c FROM analiticas_busquedas GROUP BY tema ORDER BY c DESC LIMIT 1").fetchone()
         conn.close()
-    except Exception as e:
-        logger.error(f"Error al obtener estadísticas: {e}")
-        total_busquedas = 0
-        total_recursos = 0
-        tema_popular = "Python"
-        certificados_internacionales = 0
-    
-    # Tarjetas de métricas mejoradas
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"""
-        <div class="metric-card fade-in">
-            <h4 style="color: #6a11cb; margin: 0 0 10px 0; font-size: 1.1rem;">🔍 Búsquedas</h4>
-            <p style="font-size: 2rem; font-weight: bold; color: #2c3e50; margin: 0;">{total_busquedas}</p>
-            <p style="color: #7f8c8d; margin: 5px 0 0 0; font-size: 0.9rem;">Histórico</p>
-        </div>
-        """, unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"""
-        <div class="metric-card fade-in">
-            <h4 style="color: #6a11cb; margin: 0 0 10px 0; font-size: 1.1rem;">📚 Recursos</h4>
-            <p style="font-size: 2rem; font-weight: bold; color: #2c3e50; margin: 0;">{total_recursos}</p>
-            <p style="color: #7f8c8d; margin: 5px 0 0 0; font-size: 0.9rem;">Indexados</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown(f"""
-    <div class="metric-card fade-in">
-        <h4 style="color: #6a11cb; margin: 0 0 10px 0; font-size: 1.1rem;">🌐 Certificados</h4>
-        <p style="font-size: 2rem; font-weight: bold; color: #2c3e50; margin: 0;">{certificados_internacionales}</p>
-        <p style="color: #7f8c8d; margin: 5px 0 0 0; font-size: 0.9rem;">Internacionales</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown(f"""
-    <div class="metric-card fade-in" style="border-left: 4px solid #ff9800;">
-        <h4 style="color: #ff9800; margin: 0 0 10px 0; font-size: 1.1rem;">🔥 Tema Popular</h4>
-        <p style="font-size: 1.5rem; font-weight: bold; color: #2c3e50; margin: 0;">{tema_popular}</p>
-        <p style="color: #7f8c8d; margin: 5px 0 0 0; font-size: 0.9rem;">Tendencia actual</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    st.subheader("✨ **Características Premium**")
-    st.markdown("""
-    <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); 
-                padding: 15px; border-radius: 12px; margin: 10px 0;">
-        <ul style="padding-left: 20px; color: #2c3e50;">
-            <li style="margin: 8px 0; font-weight: 500;">✅ <strong>Búsqueda Multicapa</strong> con múltiples fuentes</li>
-            <li style="margin: 8px 0; font-weight: 500;">✅ <strong>Recursos Verificados</strong> en tiempo real</li>
-            <li style="margin: 8px 0; font-weight: 500;">✅ <strong>Indexación Automática</strong> 24/7</li>
-            <li style="margin: 8px 0; font-weight: 500;">✅ <strong>Soporte Multilingüe</strong> (es, en, pt)</li>
-            <li style="margin: 8px 0; font-weight: 500;">✅ <strong>Alta Confiabilidad</strong> con scoring inteligente</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Estado del sistema
-    st.markdown("### 🤖 **Estado del Sistema**")
-    st.markdown("""
-    <div style="background: #e8f5e8; padding: 12px; border-radius: 10px; border-left: 4px solid #4CAF50;">
-        <p style="margin: 0; color: #2e7d32; font-weight: 500;">
-            <span class="status-badge status-activo">✅ Activo</span>
-            <span class="status-badge status-verificado">🔍 Multicapa</span>
-        </p>
-        <p style="margin: 5px 0 0 0; color: #555; font-size: 0.9rem;">
-            Última actualización: <strong>{}</strong>
-        </p>
-    </div>
-    """.format(datetime.now().strftime("%H:%M:%S")), unsafe_allow_html=True)
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        col1.metric("Búsquedas", total)
+        col2.metric("Top Tema", top_tema[0] if top_tema else "-")
+    except:
+        st.error("Error leyendo DB")
 
 # ----------------------------
-# CABECERA PRINCIPAL - EDICIÓN INGENIERO GOOGLE
+# 5. FUNCIONES DE LÓGICA (IA + DB)
 # ----------------------------
+
+def obtener_recomendaciones_ia(tema, nivel, idioma, api_key):
+    """Usa Groq para generar recomendaciones educativas estructuradas."""
+    client = Groq(api_key=api_key)
+    
+    prompt = f"""
+    Actúa como un experto en educación y curación de contenidos.
+    El usuario quiere aprender sobre: "{tema}".
+    Nivel: {nivel}.
+    Idioma preferido: {idioma}.
+    
+    Genera un JSON con una lista de 4 cursos o recursos gratuitos de alta calidad (Coursera, EdX, YouTube Channels, Documentación oficial).
+    No inventes URLs, usa URLs genéricas de búsqueda si no conoces la exacta (ej: youtube.com/results?search_query=...).
+    
+    Formato JSON requerido:
+    {{
+        "cursos": [
+            {{
+                "titulo": "Nombre del curso",
+                "plataforma": "Nombre de la plataforma",
+                "descripcion": "Breve descripción motivadora (max 20 palabras)",
+                "url": "URL del recurso"
+            }}
+        ]
+    }}
+    """
+    
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3-70b-8192", # Modelo muy rápido y potente
+            response_format={"type": "json_object"},
+        )
+        return json.loads(chat_completion.choices[0].message.content)['cursos']
+    except Exception as e:
+        st.error(f"Error con la IA: {e}")
+        return []
+
+def obtener_ocultas_db(tema):
+    """Busca en la base de datos local plataformas 'ocultas'."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT nombre, url_base, descripcion, nivel FROM plataformas_ocultas WHERE activa=1")
+    rows = c.fetchall()
+    conn.close()
+    
+    resultados = []
+    for r in rows:
+        # Solo añadimos si es relevante o genérico (filtro simple)
+        resultados.append({
+            "titulo": f"Explorar {tema} en {r[0]}",
+            "plataforma": r[0],
+            "descripcion": f"{r[2]} - Recurso verificado manualmente.",
+            "url": r[1].format(tema.replace(" ", "+")),
+            "tipo": "oculta"
+        })
+    # Devolvemos solo 2 al azar para variar
+    import random
+    if len(resultados) > 2:
+        return random.sample(resultados, 2)
+    return resultados
+
+def registrar_evento(tema, idioma, nivel):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO analiticas_busquedas (tema, idioma, nivel, timestamp, origen) VALUES (?, ?, ?, ?, ?)",
+              (tema, idioma, nivel, datetime.now().isoformat(), "app_v2"))
+    conn.commit()
+    conn.close()
+
+# ----------------------------
+# 6. UI PRINCIPAL
+# ----------------------------
+
 st.markdown("""
-<div class="main-header fade-in">
-    <h1>🎓 Buscador Profesional de Cursos con IA Avanzada</h1>
-    <p>Descubre recursos educativos verificados desde plataformas globales hasta tesoros ocultos del conocimiento</p>
-    <div style="display: flex; gap: 15px; margin-top: 20px; flex-wrap: wrap;">
-        <span class="status-badge status-activo">✅ Sistema Activo</span>
-        <span class="status-badge status-verificado">🌐 Multilingüe</span>
-        <span class="status-badge status-verificado">⚡ IA en Tiempo Real</span>
-    </div>
+<div class="main-header">
+    <h1>🎓 Buscador Educativo Potenciado por IA</h1>
+    <p>La inteligencia artificial busca, filtra y te recomienda la mejor ruta de aprendizaje.</p>
 </div>
 """, unsafe_allow_html=True)
 
-# ----------------------------
-# SISTEMA DE BÚSQUEDA INTELIGENTE
-# ----------------------------
-IDIOMAS = {
-    "Español (es)": "es",
-    "Inglés (en)": "en", 
-    "Portugués (pt)": "pt"
-}
-
-NIVELES = ["Cualquiera", "Principiante", "Intermedio", "Avanzado"]
-
+# Formulario
 with st.container():
-    st.markdown('<div class="search-form fade-in">', unsafe_allow_html=True)
-    
     col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        tema = st.text_input("🔍 ¿Qué quieres aprender hoy?", 
-                           placeholder="Ej: Python, Machine Learning, Diseño UX...",
-                           key="tema_input",
-                           help="Ingresa el tema que deseas aprender. El sistema buscará recursos educativos verificados.")
-    
+        tema = st.text_input("🔍 ¿Qué quieres aprender hoy?", placeholder="Ej: Python para Finanzas, Marketing Digital...")
     with col2:
-        nivel = st.selectbox("📚 Nivel", 
-                           NIVELES,
-                           key="nivel_select",
-                           help="Selecciona el nivel de dificultad deseado")
-    
+        nivel = st.selectbox("📊 Nivel", ["Principiante", "Intermedio", "Avanzado", "Experto"])
     with col3:
-        idioma_seleccionado = st.selectbox("🌍 Idioma", 
-                                         list(IDIOMAS.keys()),
-                                         key="idioma_select",
-                                         help="Elige el idioma de los recursos")
-    
-    # Botón de búsqueda con animación
-    buscar = st.button("🚀 Buscar con IA Avanzada", use_container_width=True, type="primary")
-    
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ----------------------------
-# SISTEMA DE BÚSQUEDA AVANZADO CON IA
-# ----------------------------
-if buscar and tema.strip():
-    with st.spinner("🧠 **IA analizando resultados...**"):
-        try:
-            # Ejecutar búsqueda asíncrona
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            resultados = loop.run_until_complete(
-                buscar_recursos_multicapa(tema, idioma_seleccionado, nivel)
-            )
-            
-            loop.close()
-            
-            if resultados:
-                # Mostrar resultados
-                st.success(f"✅ ¡**{len(resultados)} recursos** encontrados para **{tema}** en **{idioma_seleccionado}**!")
-                
-                # Mostrar estadísticas
-                con_certificado = sum(1 for r in resultados if r.certificacion)
-                plataformas_unicas = len(set(r.plataforma for r in resultados))
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Recursos", len(resultados))
-                col2.metric("Plataformas", plataformas_unicas)
-                col3.metric("Confianza Promedio", f"{sum(r.confianza for r in resultados) / len(resultados):.1%}")
-                
-                # Mostrar resultados
-                st.markdown("### 📚 **Resultados Encontrados**")
-                
-                for i, resultado in enumerate(resultados):
-                    # Clases CSS para estilos
-                    color_clase = {
-                        "Principiante": "nivel-principiante",
-                        "Intermedio": "nivel-intermedio", 
-                        "Avanzado": "nivel-avanzado"
-                    }.get(resultado.nivel, "")
-                    
-                    extra_class = "plataforma-oculta" if resultado.tipo == "oculta" else ""
-                    
-                    # Badge de certificación (simulado para esta versión)
-                    cert_badge = ""
-                    if "coursera" in resultado.plataforma.lower() or "edx" in resultado.plataforma.lower():
-                        cert_badge = f'<span class="certificado-badge certificado-gratuito">🎓 Certificado Disponible</span>'
-                    elif "kaggle" in resultado.plataforma.lower() or "freecodecamp" in resultado.plataforma.lower():
-                        cert_badge = f'<span class="certificado-badge certificado-gratuito">✅ Certificado Gratuito</span>'
-                    
-                    # Animación secuencial
-                    time.sleep(0.1)
-                    
-                    st.markdown(f"""
-                    <div class="resultado-card {color_clase} {extra_class} fade-in" style="animation-delay: {i * 0.1}s;">
-                        <h3>🎯 {resultado.titulo}</h3>
-                        <p><strong>📚 Nivel:</strong> {resultado.nivel} | <strong>🌐 Plataforma:</strong> {resultado.plataforma}</p>
-                        <p>📝 {resultado.descripcion}</p>
-                        
-                        {cert_badge}
-                        
-                        <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-                            <a href="{resultado.url}" target="_blank" style="flex: 1; min-width: 200px; background: linear-gradient(to right, #6a11cb, #2575fc); color: white; padding: 12px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; text-align: center; transition: all 0.3s ease;">
-                                ➡️ Acceder al Recurso
-                            </a>
-                        </div>
-                        
-                        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee; font-size: 0.9rem; color: #666;">
-                            <p style="margin: 5px 0;">
-                                <strong>🔍 Confianza:</strong> {(resultado.confianza * 100):.1f}% | 
-                                <strong>✅ Última Verificación:</strong> {datetime.fromisoformat(resultado.ultima_verificacion).strftime('%d/%m/%Y')}
-                            </p>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                # Descarga de resultados
-                st.markdown("---")
-                df = pd.DataFrame([{
-                    'titulo': r.titulo,
-                    'url': r.url,
-                    'plataforma': r.plataforma,
-                    'nivel': r.nivel,
-                    'idioma': r.idioma,
-                    'categoria': r.categoria,
-                    'confianza': f"{r.confianza:.1%}"
-                } for r in resultados])
-                
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Descargar Resultados (CSV)",
-                    data=csv,
-                    file_name=f"resultados_busqueda_{tema.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-                
-                # Feedback del usuario
-                st.markdown("### 💡 **Tu Opinión es Importante**")
-                col_feedback1, col_feedback2 = st.columns(2)
-                with col_feedback1:
-                    util = st.radio("¿Te resultó útil esta búsqueda?", ["Sí", "No"], horizontal=True)
-                with col_feedback2:
-                    comentario = st.text_input("Comentarios adicionales (opcional)")
-                
-                if st.button("Enviar Feedback", use_container_width=True):
-                    st.success("✅ ¡Gracias por tu feedback! Ayuda a mejorar el sistema de IA.")
-            
-            else:
-                st.warning("⚠️ No encontramos recursos verificados para este tema. Intenta con otro término de búsqueda o verifica tu conexión a internet.")
+        idioma = st.selectbox("🌍 Idioma", ["Español", "Inglés", "Portugués"])
         
-        except Exception as e:
-            logger.error(f"Error durante la búsqueda: {e}")
-            st.error("❌ Ocurrió un error durante la búsqueda. Por favor, intenta nuevamente.")
-            st.exception(e)
+    btn_buscar = st.button("🚀 Generar Ruta de Aprendizaje", type="primary")
 
 # ----------------------------
-# SECCIÓN DE EJEMPLOS Y TENDENCIAS - INTELIGENTE
+# 7. PROCESAMIENTO Y RESULTADOS
 # ----------------------------
-else:
-    st.info("💡 **Sistema listo para buscar**. Ingresa un tema, selecciona nivel e idioma para descubrir recursos educativos verificados.")
+
+if btn_buscar and tema:
+    registrar_evento(tema, idioma, nivel)
     
-    # Mostrar estadísticas en tiempo real
-    col_stats1, col_stats2, col_stats3 = st.columns(3)
-    col_stats1.metric("🔍 Tendencias", "AI, Python, UX")
-    col_stats2.metric("🌐 Idiomas", "es, en, pt")
-    col_stats3.metric("⭐ Confiabilidad", "87%")
+    st.markdown("---")
+    st.subheader(f"🧠 Análisis de IA para: {tema}")
     
-    st.markdown("### 🚀 **Ejemplos Recomendados**")
+    # Barra de progreso real
+    progreso = st.progress(0)
+    status = st.empty()
     
-    # Ejemplos basados en tendencias reales
-    ejemplos_inteligentes = {
-        "es": [
-            {"tema": "Python para Data Science", "nivel": "Intermedio", "descripcion": "Cursos con proyectos prácticos"},
-            {"tema": "Machine Learning desde Cero", "nivel": "Principiante", "descripcion": "Recursos gratuitos con ejercicios"},
-            {"tema": "Diseño UX/UI Profesional", "nivel": "Avanzado", "descripcion": "Tutoriales con casos reales"}
-        ],
-        "en": [
-            {"tema": "Data Science Specialization", "nivel": "Avanzado", "descripcion": "Programs from top universities"},
-            {"tema": "Full Stack Development", "nivel": "Intermedio", "descripcion": "Hands-on projects with certificates"},
-            {"tema": "Digital Marketing Strategy", "nivel": "Principiante", "descripcion": "Free courses with practical exercises"}
-        ],
-        "pt": [
-            {"tema": "Programação em Python", "nivel": "Intermedio", "descripcion": "Cursos com projetos práticos"},
-            {"tema": "Ciência de Dados Aplicada", "nivel": "Avanzado", "descripcion": "Recursos gratuitos de universidades"},
-            {"tema": "Marketing Digital Completo", "nivel": "Principiante", "descripcion": "Cursos com certificados"}
-        ]
-    }
+    resultados_finales = []
     
-    tabs = st.tabs(["🇪🇸 Español", "🇬🇧 Inglés", "🇵🇹 Portugués"])
+    # PASO 1: Búsqueda IA (Si hay Key)
+    if api_key:
+        status.write("🤖 Consultando a Llama3 (Groq) sobre los mejores recursos...")
+        progreso.progress(30)
+        cursos_ia = obtener_recomendaciones_ia(tema, nivel, idioma, api_key)
+        # Marcar como tipo IA
+        for c in cursos_ia:
+            c['tipo'] = 'ia'
+        resultados_finales.extend(cursos_ia)
+        progreso.progress(70)
+    else:
+        st.warning("⚠️ No se detectó API Key. Mostrando resultados genéricos.")
+        # Fallback manual simple
+        resultados_finales.append({
+            "titulo": f"Curso de {tema} en YouTube",
+            "plataforma": "YouTube",
+            "descripcion": "Búsqueda directa de tutoriales más vistos.",
+            "url": f"https://www.youtube.com/results?search_query=curso+{tema}",
+            "tipo": "ia"
+        })
     
-    for tab_idx, (idioma_codigo, ejemplos) in enumerate(ejemplos_inteligentes.items()):
-        with tabs[tab_idx]:
-            for ejemplo in ejemplos:
-                with st.container():
-                    st.markdown(f"""
-                    <div class="resultado-card nivel-{ejemplo['nivel'].lower()} fade-in" style="border-left-width: 3px;">
-                        <h4>🎯 {ejemplo['tema']}</h4>
-                        <p><strong>📚 Nivel:</strong> {ejemplo['nivel']} | <strong>💡 Recomendado por IA</strong></p>
-                        <p>{ejemplo['descripcion']}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if st.button(f"🚀 Buscar: {ejemplo['tema']}", key=f"ejemplo_{tab_idx}_{ejemplo['tema']}", use_container_width=True):
-                        st.session_state.tema_input = ejemplo['tema']
-                        st.session_state.nivel_select = ejemplo['nivel']
-                        st.session_state.idioma_select = [k for k, v in IDIOMAS.items() if v == idioma_codigo][0]
-                        st.rerun()
+    # PASO 2: Mezclar con DB Local ("Tesoros Ocultos")
+    status.write("💎 Buscando en base de datos de recursos ocultos...")
+    ocultos = obtener_ocultas_db(tema)
+    resultados_finales.extend(ocultos)
+    
+    progreso.progress(100)
+    time.sleep(0.5)
+    progreso.empty()
+    status.empty()
+    
+    # MOSTRAR TARJETAS
+    if resultados_finales:
+        for res in resultados_finales:
+            # Determinar estilo según origen
+            clase_extra = "card-ia" if res.get('tipo') == 'ia' else "card-oculta"
+            icono = "🤖" if res.get('tipo') == 'ia' else "💎"
+            etiqueta = "Recomendado por IA" if res.get('tipo') == 'ia' else "Plataforma Oculta"
+            
+            st.markdown(f"""
+            <div class="resultado-card {clase_extra}">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                    <h3 style="margin:0;">{icono} {res['titulo']}</h3>
+                    <span style="background:#eee; padding:4px 8px; border-radius:5px; font-size:0.8em;">{res['plataforma']}</span>
+                </div>
+                <p style="color:#666; font-size:0.95em; margin: 10px 0;">{res['descripcion']}</p>
+                <div style="margin-top:15px;">
+                    <a href="{res['url']}" target="_blank" style="text-decoration:none;">
+                        <button style="background:linear-gradient(90deg, #4CAF50, #2E7D32); color:white; border:none; padding:10px 20px; border-radius:5px; cursor:pointer; font-weight:bold;">
+                            Ver Recurso ➡️
+                        </button>
+                    </a>
+                </div>
+                <div style="margin-top:5px; text-align:right; font-size:0.7em; color:#888;">{etiqueta}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        # Opción de descargar
+        df = pd.DataFrame(resultados_finales)
+        st.download_button("📥 Descargar Reporte CSV", df.to_csv(index=False), "plan_estudios.csv", "text/csv")
+        
+    else:
+        st.error("No se encontraron resultados. Intenta ser más específico.")
 
 # ----------------------------
-# PIE DE PÁGINA PROFESIONAL
+# 8. FOOTER
 # ----------------------------
 st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: #666; font-size: 14px; padding: 25px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 15px; margin-top: 20px;">
-    <div style="display: flex; justify-content: center; gap: 30px; flex-wrap: wrap; margin-bottom: 15px;">
-        <div>
-            <h4 style="color: #6a11cb; margin: 0 0 8px 0; font-size: 1.1rem;">🧠 Tecnología IA</h4>
-            <p style="margin: 0; color: #2c3e50; font-weight: 500;">
-                Búsqueda Multicapa • Recursos Verificados • Aprendizaje Continuo
-            </p>
-        </div>
-        <div>
-            <h4 style="color: #6a11cb; margin: 0 0 8px 0; font-size: 1.1rem;">🌐 Cobertura Global</h4>
-            <p style="margin: 0; color: #2c3e50; font-weight: 500;">
-                10+ Plataformas • 3 Idiomas • Actualización Continua
-            </p>
-        </div>
-        <div>
-            <h4 style="color: #6a11cb; margin: 0 0 8px 0; font-size: 1.1rem;">⚡ Rendimiento</h4>
-            <p style="margin: 0; color: #2c3e50; font-weight: 500;">
-                Respuesta Rápida • Cache Inteligente • Alta Disponibilidad
-            </p>
-        </div>
-    </div>
-    
-    <strong>✨ Buscador Profesional de Cursos con IA Avanzada</strong><br>
-    <span style="color: #2c3e50; font-weight: 500;">Sistema de búsqueda inteligente diseñado para educación de calidad</span><br>
-    <em style="color: #7f8c8d;">Última actualización: {} • Versión: 2.1.0 • Estado: ✅ Activo</em><br>
-    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd;">
-        <code style="background: #f1f3f5; padding: 2px 8px; border-radius: 4px; color: #d32f2f;">
-            Sistema listo para producción - Configurado para múltiples fuentes de búsqueda
-        </code>
-    </div>
-</div>
-""".format(datetime.now().strftime('%d/%m/%Y %H:%M')), unsafe_allow_html=True)
-
-# ----------------------------
-# INFORMACIÓN DE CONFIGURACIÓN
-# ----------------------------
-with st.expander("🔧 Información de Configuración del Sistema"):
-    st.markdown("### **Estado de las APIs**")
-    
-    col_api1, col_api2, col_api3 = st.columns(3)
-    
-    with col_api1:
-        estado_google = "✅ Configurada" if GOOGLE_API_KEY and GOOGLE_CX else "❌ No configurada"
-        st.markdown(f"**Google API:** {estado_google}")
-    
-    with col_api2:
-        estado_duckduckgo = "✅ Habilitada" if DUCKDUCKGO_ENABLED else "❌ Deshabilitada"
-        st.markdown(f"**DuckDuckGo API:** {estado_duckduckgo}")
-    
-    with col_api3:
-        estado_tor = "✅ Habilitada" if TOR_ENABLED else "❌ Deshabilitada"
-        st.markdown(f"**Red Tor:** {estado_tor}")
-    
-    st.markdown("### **Requisitos del Sistema**")
-    st.code("""
-requirements.txt:
-streamlit==1.32.0
-pandas==2.2.1
-requests==2.31.0
-aiohttp==3.9.3
-python-dotenv==1.0.1
-asyncio==3.4.3
-sqlite3==0.0.1
-    """)
-    
-    st.markdown("### **Instrucciones de Configuración**")
-    st.markdown("""
-    1. **Para Google API**: 
-       - Crea un archivo `.env` en la raíz del proyecto
-       - Añade: `GOOGLE_API_KEY=tu_clave` y `GOOGLE_CX=tu_id_motor`
-    
-    2. **Para producción**:
-       - En Streamlit Cloud: Settings → Secrets → añade las variables de entorno
-    
-    3. **Para desarrollo local**:
-       - Instala dependencias: `pip install -r requirements.txt`
-       - Ejecuta: `streamlit run app.py`
-    """)
-
-logger.info("✅ Sistema de búsqueda profesional iniciado correctamente")
-logger.info(f"🧠 IA Avanzada: Activa - Versión 2.1.0")
-logger.info(f"🌐 Plataformas disponibles: {len(IDIOMAS)} idiomas soportados")
-logger.info(f"⚡ Rendimiento optimizado para producción")
+st.markdown("<div style='text-align:center; color:#888;'>Desarrollado con Streamlit & Groq API 🚀</div>", unsafe_allow_html=True)
