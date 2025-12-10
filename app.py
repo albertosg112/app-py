@@ -1,10 +1,11 @@
-# app.py — Versión completa, corregida y sin pérdida de funcionalidades
-# - Corrige el NameError por planificar_indexacion_recursos
-# - Asegura que el botón "Acceder al recurso" siempre muestre texto (evita <a> vacío)
-# - Mantiene análisis IA en segundo plano con Groq si está disponible y oculta el JSON del chat
-# - Arregla el INSERT de plataformas (placeholders y columnas consistentes)
-# - Evita librerías no instaladas (bs4, duckduckgo_search) para no romper el deploy
-# - Preserva la estética y el diseño de tus cards y encabezados
+# app.py — Versión completa con parches integrados, sin eliminar funcionalidades
+# - Botón “Acceder al recurso” con texto visible (evita <a> vacío o “...”)
+# - Render HTML correcto (st.markdown(..., unsafe_allow_html=True) en vez de st.write/st.code)
+# - Chat IA Groq: oculta el bloque JSON del comando y ejecuta búsqueda automáticamente
+# - INSERT de plataformas con columnas/valores consistentes
+# - planificar_indexacion_recursos definida para evitar NameError
+# - Análisis IA en segundo plano (si GROQ_API_KEY está disponible)
+# - Mantiene métricas, descarga CSV, diseño responsivo y todas tus funcionalidades
 
 import streamlit as st
 import pandas as pd
@@ -341,12 +342,7 @@ init_advanced_database()
 # UTILIDADES
 # ----------------------------
 def get_codigo_idioma(nombre_idioma: str) -> str:
-    mapeo = {
-        "Español (es)": "es",
-        "Inglés (en)": "en",
-        "Portugués (pt)": "pt",
-        "es": "es", "en": "en", "pt": "pt"
-    }
+    mapeo = {"Español (es)": "es", "Inglés (en)": "en", "Portugués (pt)": "pt", "es": "es", "en": "en", "pt": "pt"}
     return mapeo.get(nombre_idioma, "es")
 
 def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool:
@@ -405,9 +401,7 @@ def extraer_plataforma(url: str) -> str:
     if 'cervantesvirtual' in dominio: return 'Biblioteca Cervantes'
     if '.edu' in dominio or '.ac.' in dominio or '.gob' in dominio or '.gov' in dominio: return 'Institución Académica'
     partes = dominio.split('.')
-    if len(partes) > 1:
-        return partes[-2].title()
-    return dominio.title()
+    return partes[-2].title() if len(partes) > 1 else dominio.title()
 
 # ----------------------------
 # GROQ (opcional)
@@ -765,10 +759,7 @@ def iniciar_tareas_background():
 def planificar_analisis_ia(resultados: List[RecursoEducativo]):
     if not GROQ_AVAILABLE or not GROQ_API_KEY:
         return
-    tarea = {
-        'tipo': 'analizar_resultados',
-        'parametros': {'resultados': [r for r in resultados if r.analisis_pendiente]}
-    }
+    tarea = {'tipo': 'analizar_resultados', 'parametros': {'resultados': [r for r in resultados if r.analisis_pendiente]}}
     background_tasks.put(tarea)
     logger.info(f"Tarea IA planificada para {len(tarea['parametros']['resultados'])} resultados")
 
@@ -862,8 +853,19 @@ idiomas_indexacion = ["es", "en", "pt"]
 planificar_indexacion_recursos(temas_populares, idiomas_indexacion)
 
 # ----------------------------
-# RENDER DE RESULTADOS
+# UTILIDADES DE UI (Parches)
 # ----------------------------
+def link_button(url: str, label: str = "➡️ Acceder al recurso") -> str:
+    # Asegura que el contenido del <a> nunca esté vacío y aplica estilo consistente
+    return f'''
+    <a href="{url}" target="_blank"
+       style="flex:1;min-width:200px;background:linear-gradient(to right,#6a11cb,#2575fc);
+              color:white;padding:10px 16px;text-decoration:none;border-radius:8px;
+              font-weight:bold;text-align:center;">
+       {label}
+    </a>
+    '''
+
 def badge_certificacion(cert: Optional[Certificacion]) -> str:
     if not cert:
         return ""
@@ -880,23 +882,29 @@ def badge_certificacion(cert: Optional[Certificacion]) -> str:
 def clase_nivel(nivel: str) -> str:
     return {"Principiante": "nivel-principiante", "Intermedio": "nivel-intermedio", "Avanzado": "nivel-avanzado"}.get(nivel, "")
 
+# ----------------------------
+# RENDER DE RESULTADOS (Parches aplicados)
+# ----------------------------
 def mostrar_recurso_basico(recurso: RecursoEducativo, index: int, analisis_pendiente: bool = False):
     extra = "plataforma-oculta" if recurso.tipo == "oculta" else ""
     pending_class = "analisis-pendiente" if analisis_pendiente else ""
-    acceso_texto = "➡️ Acceder al Recurso"  # asegura que el <a> nunca esté vacío
+    cert_html = badge_certificacion(recurso.certificacion)
 
     st.markdown(f"""
-    <div class="resultado-card {clase_nivel(recurso.nivel)} {extra} {pending_class} fade-in" style="animation-delay: {index * 0.08}s;">
+    <div class="resultado-card {clase_nivel(recurso.nivel)} {extra} {pending_class} fade-in"
+         style="animation-delay: {index * 0.08}s;">
         <h3>🎯 {recurso.titulo}</h3>
         <p><strong>📚 Nivel:</strong> {recurso.nivel} | <strong>🌐 Plataforma:</strong> {recurso.plataforma}</p>
         <p>📝 {recurso.descripcion}</p>
-        {badge_certificacion(recurso.certificacion)}
+        {cert_html}
         <div style="margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap;">
-            <a href="{recurso.url}" target="_blank" style="flex:1;min-width:200px;background:linear-gradient(to right,#6a11cb,#2575fc);color:white;padding:10px 16px;text-decoration:none;border-radius:8px;font-weight:bold;text-align:center;">{acceso_texto}</a>
+            {link_button(recurso.url, "➡️ Acceder al recurso")}
         </div>
         <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee; font-size: 0.9rem; color: #666;">
-            <p style="margin:4px 0;"><strong>🔎 Confianza:</strong> {recurso.confianza*100:.1f}% | <strong>✅ Verificado:</strong> {datetime.fromisoformat(recurso.ultima_verificacion).strftime('%d/%m/%Y')}</p>
-            <p style="margin:4px 0;"><strong>🌍 Idioma:</strong> {recurso.idioma.upper()} | <strong>🏷️ Categoría:</strong> {recurso.categoria}</p>
+            <p style="margin:4px 0;"><strong>🔎 Confianza:</strong> {recurso.confianza*100:.1f}% |
+               <strong>✅ Verificado:</strong> {datetime.fromisoformat(recurso.ultima_verificacion).strftime('%d/%m/%Y')}</p>
+            <p style="margin:4px 0;"><strong>🌍 Idioma:</strong> {recurso.idioma.upper()} |
+               <strong>🏷️ Categoría:</strong> {recurso.categoria}</p>
             {"<p style='margin:4px 0;color:#6a11cb;font-weight:bold;'>🤖 Análisis IA en progreso...</p>" if analisis_pendiente else ""}
         </div>
     </div>
@@ -905,23 +913,23 @@ def mostrar_recurso_basico(recurso: RecursoEducativo, index: int, analisis_pendi
 def mostrar_recurso_con_ia(recurso: RecursoEducativo, index: int):
     extra = "plataforma-oculta" if recurso.tipo == "oculta" else ""
     ia_class = "con-analisis-ia" if recurso.metadatos_analisis else ""
-    acceso_texto = "➡️ Acceder al Recurso"
-
+    cert_html = badge_certificacion(recurso.certificacion)
     analisis_ia = recurso.metadatos_analisis or {}
-    calidad_ia = analisis_ia.get("calidad_ia", recurso.confianza)
-    relevancia_ia = analisis_ia.get("relevancia_ia", recurso.confianza)
+    calidad = int(100 * analisis_ia.get("calidad_ia", recurso.confianza))
+    relevancia = int(100 * analisis_ia.get("relevancia_ia", recurso.confianza))
     recomendacion = analisis_ia.get("recomendacion_personalizada", "")
     razones = analisis_ia.get("razones_calidad", [])[:3]
     advertencias = analisis_ia.get("advertencias", [])[:2]
-    razones_html = "".join([f"<li>{r}</li>" for r in razones]) if razones else ""
-    advertencias_html = "".join([f"<li>{a}</li>" for a in advertencias]) if advertencias else ""
 
-    ia_content = ""
+    razones_html = "".join(f"<li>{r}</li>" for r in razones) if razones else ""
+    advertencias_html = "".join(f"<li>{a}</li>" for a in advertencias) if advertencias else ""
+
+    ia_block = ""
     if recurso.metadatos_analisis:
-        ia_content = f"""
+        ia_block = f"""
         <div style="background:#f0ecff;padding:10px;border-radius:8px;margin-top:10px;border-left:4px solid #6a11cb;">
             <strong>🧠 Análisis IA</strong><br>
-            Calidad: {int(100*calidad_ia)}% • Relevancia: {int(100*relevancia_ia)}%<br>
+            Calidad: {calidad}% • Relevancia: {relevancia}%<br>
             {recomendacion}
         </div>
         {f'<div style="margin: 10px 0; padding: 10px; background: #e3f2fd; border-radius: 8px;"><strong>🔍 Razones de Calidad:</strong><ul style="margin: 8px 0 0 20px;">{razones_html}</ul></div>' if razones_html else ''}
@@ -929,18 +937,21 @@ def mostrar_recurso_con_ia(recurso: RecursoEducativo, index: int):
         """
 
     st.markdown(f"""
-    <div class="resultado-card {clase_nivel(recurso.nivel)} {extra} {ia_class} fade-in" style="animation-delay: {index * 0.08}s;">
+    <div class="resultado-card {clase_nivel(recurso.nivel)} {extra} {ia_class} fade-in"
+         style="animation-delay: {index * 0.08}s;">
         <h3>🎯 {recurso.titulo}</h3>
         <p><strong>📚 Nivel:</strong> {recurso.nivel} | <strong>🌐 Plataforma:</strong> {recurso.plataforma}</p>
         <p>📝 {recurso.descripcion}</p>
-        {badge_certificacion(recurso.certificacion)}
-        {ia_content}
+        {cert_html}
+        {ia_block}
         <div style="margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap;">
-            <a href="{recurso.url}" target="_blank" style="flex:1;min-width:200px;background:linear-gradient(to right,#6a11cb,#2575fc);color:white;padding:10px 16px;text-decoration:none;border-radius:8px;font-weight:bold;text-align:center;">{acceso_texto}</a>
+            {link_button(recurso.url, "➡️ Acceder al recurso")}
         </div>
         <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee; font-size: 0.9rem; color: #666;">
-            <p style="margin:4px 0;"><strong>🔎 Confianza:</strong> {recurso.confianza*100:.1f}% | <strong>✅ Verificado:</strong> {datetime.fromisoformat(recurso.ultima_verificacion).strftime('%d/%m/%Y')}</p>
-            <p style="margin:4px 0;"><strong>🌍 Idioma:</strong> {recurso.idioma.upper()} | <strong>🏷️ Categoría:</strong> {recurso.categoria}</p>
+            <p style="margin:4px 0;"><strong>🔎 Confianza:</strong> {recurso.confianza*100:.1f}% |
+               <strong>✅ Verificado:</strong> {datetime.fromisoformat(recurso.ultima_verificacion).strftime('%d/%m/%Y')}</p>
+            <p style="margin:4px 0;"><strong>🌍 Idioma:</strong> {recurso.idioma.upper()} |
+               <strong>🏷️ Categoría:</strong> {recurso.categoria}</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1002,7 +1013,7 @@ if buscar and tema.strip():
             st.exception(e)
 
 # ----------------------------
-# CHAT IA (opcional, ocultando JSON de comandos)
+# CHAT IA (opcional) — oculta JSON y ejecuta búsquedas
 # ----------------------------
 st.markdown("### 💬 Asistente educativo (opcional)")
 if "chat_msgs" not in st.session_state:
@@ -1048,6 +1059,7 @@ def extraer_comando_busqueda(texto: str) -> Optional[Dict[str, str]]:
     return None
 
 def ui_chat_mostrar(mensaje: str, rol: str):
+    # Remueve el último bloque JSON del render, si existe
     texto = re.sub(r'\{.*\}\s*$', '', mensaje, flags=re.DOTALL).strip()
     if rol == "assistant":
         st.markdown(f"> {texto}")
@@ -1141,7 +1153,7 @@ st.markdown(f"""
 <div style="text-align:center;color:#666;font-size:14px;padding:20px;background:#f8f9fa;border-radius:12px;">
     <strong>✨ Buscador Profesional de Cursos</strong><br>
     <span style="color: #2c3e50; font-weight: 500;">Resultados inmediatos • Cache inteligente • Alta disponibilidad</span><br>
-    <em style="color: #7f8c8d;">Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M')} • Versión: 3.1.2 • Estado: ✅ Activo</em><br>
+    <em style="color: #7f8c8d;">Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M')} • Versión: 3.1.3 • Estado: ✅ Activo</em><br>
     <div style="margin-top:10px;padding-top:10px;border-top:1px solid #ddd;">
         <code style="background:#f1f3f5;padding:2px 8px;border-radius:4px;color:#d32f2f;">
             IA opcional — Sistema funcional sin dependencias externas críticas
