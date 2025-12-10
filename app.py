@@ -1057,9 +1057,21 @@ def extraer_comando_busqueda(texto: str) -> Optional[Dict[str, str]]:
         logger.warning(f"JSON de IA inválido: {e}")
     return None
 
+# PARCHE: función de render del chat que limpia HTML y JSON visibles sin tocar el resto del código
+def limpiar_html_visible(texto: str) -> str:
+    """
+    Elimina cualquier bloque HTML o JSON que aparezca al final del texto.
+    Evita que se muestren etiquetas como <div> o {...} en la interfaz.
+    """
+    texto = re.sub(r'\{.*\}\s*$', '', texto, flags=re.DOTALL).strip()
+    texto = re.sub(r'<[^>]+>$', '', texto, flags=re.DOTALL).strip()
+    return texto
+
 def ui_chat_mostrar(mensaje: str, rol: str):
-    # Remueve el último bloque JSON del render, si existe
-    texto = re.sub(r'\{.*\}\s*$', '', mensaje, flags=re.DOTALL).strip()
+    """
+    Muestra los mensajes del chat sin renderizar HTML ni JSON como texto plano.
+    """
+    texto = limpiar_html_visible(mensaje)
     if rol == "assistant":
         st.markdown(f"> {texto}")
     elif rol == "user":
@@ -1144,7 +1156,6 @@ with st.sidebar:
 
     st.markdown("### 🤖 Estado del sistema")
     st.info(f"IA: {'✅ Disponible' if GROQ_AVAILABLE and GROQ_API_KEY else '⚠️ No disponible'}\nÚltima actualización: {datetime.now().strftime('%H:%M:%S')}")
-
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ----------------------------
