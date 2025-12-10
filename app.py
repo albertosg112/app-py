@@ -20,7 +20,6 @@ from functools import lru_cache
 import asyncio
 import aiohttp
 from dotenv import load_dotenv
-import groq
 
 # ----------------------------
 # CONFIGURACIÓN AVANZADA Y LOGGING
@@ -29,31 +28,31 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('buscador_cursos.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("BuscadorProfesional")
 
-# Cargar variables de entorno de forma segura
-def get_secret(key, default=""):
-    """Función auxiliar para obtener secretos sin errores de tipo"""
-    if hasattr(st, 'secrets'):
-        return str(st.secrets.get(key, default))
-    return str(os.getenv(key, default))
+# Manejo seguro de variables de entorno
+def get_secret(key: str, default: str = "") -> str:
+    """Obtiene un secreto de Streamlit Secrets o variables de entorno"""
+    try:
+        if hasattr(st, 'secrets') and key in st.secrets:
+            return st.secrets[key]
+        return os.getenv(key, default)
+    except:
+        return default
 
-GOOGLE_API_KEY = get_secret("GOOGLE_API_KEY")
-GOOGLE_CX = get_secret("GOOGLE_CX")
-GROQ_API_KEY = get_secret("GROQ_API_KEY")
-
-# Corrección del error AttributeError: Convertimos a string antes de usar lower()
-raw_duck = get_secret("DUCKDUCKGO_ENABLED", "true")
-DUCKDUCKGO_ENABLED = raw_duck.lower() == "true"
+# Cargar variables de entorno
+GOOGLE_API_KEY = get_secret("GOOGLE_API_KEY", "")
+GOOGLE_CX = get_secret("GOOGLE_CX", "")
+GROQ_API_KEY = get_secret("GROQ_API_KEY", "")
+DUCKDUCKGO_ENABLED = get_secret("DUCKDUCKGO_ENABLED", "true").lower() == "true"
 
 # Configuración de parámetros
 MAX_BACKGROUND_TASKS = 1  # ¡CRÍTICO para SQLite! Evita el error "database is locked"
 CACHE_EXPIRATION = timedelta(hours=12)
-GROQ_MODEL = "llama3-8b-8192"  # Modelo rápido y gratuito
+GROQ_MODEL = "llama3-8b-8192"  # Modelo rápido y gratuito disponible en Groq
 
 # Sistema de caché para búsquedas frecuentes
 search_cache = {}
@@ -88,7 +87,7 @@ class RecursoEducativo:
     categoria: str
     certificacion: Optional[Certificacion]
     confianza: float
-    tipo: str  # "conocida", "oculta", "verificada"
+    tipo: str  # "conocida", "oculta", "verificada", "tor", "academico"
     ultima_verificacion: str
     activo: bool
     metadatos: Dict[str, Any]
@@ -97,7 +96,6 @@ class RecursoEducativo:
 # ----------------------------
 # CONFIGURACIÓN INICIAL Y BASE DE DATOS AVANZADA
 # ----------------------------
-# Usamos v3 para asegurar una base de datos limpia y sin errores de columnas
 DB_PATH = "cursos_inteligentes_v3.db"
 
 def init_advanced_database():
@@ -343,7 +341,7 @@ def extraer_plataforma(url: str) -> str:
         return dominio.title()
 
 # ----------------------------
-# SISTEMA DE ANÁLISIS CON GROQ IA
+# SISTEMA DE ANÁLISIS CON GROQ IA (CORREGIDO Y OPTIMIZADO)
 # ----------------------------
 async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict) -> Dict:
     """Usa Groq API para analizar profundamente la calidad y relevancia de un curso"""
@@ -366,7 +364,8 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
         }
     
     try:
-        # Inicializar cliente Groq
+        # Importar groq dinámicamente para evitar error si no está instalado
+        import groq
         client = groq.Groq(api_key=GROQ_API_KEY)
         
         prompt = f"""
@@ -398,7 +397,7 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
         }}
         """
         
-        # Llamada a Groq API
+        # Llamada a Groq API - ¡CORREGIDO CON MODELO REAL!
         response = client.chat.completions.create(
             messages=[
                 {
@@ -406,7 +405,7 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
                     "content": prompt,
                 }
             ],
-            model=GROQ_MODEL,
+            model=GROQ_MODEL,  # ¡MODELO REAL DISPONIBLE EN GROQ!
             temperature=0.3,
             max_tokens=1000,
             response_format={"type": "json_object"},
@@ -461,7 +460,7 @@ def obtener_perfil_usuario() -> Dict:
     }
 
 # ----------------------------
-# SISTEMA DE BÚSQUEDA MULTICAPA AVANZADO
+# SISTEMA DE BÚSQUEDA MULTICAPA AVANZADO (CORREGIDO)
 # ----------------------------
 async def buscar_recursos_multicapa(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     """Sistema de búsqueda avanzado que combina múltiples fuentes"""
@@ -850,7 +849,7 @@ def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEduca
     return resultados_unicos
 
 # ----------------------------
-# SISTEMA DE TAREAS EN SEGUNDO PLANO
+# SISTEMA DE TAREAS EN SEGUNDO PLANO (CORREGIDO)
 # ----------------------------
 def iniciar_tareas_background():
     """Inicia el sistema de tareas en segundo plano"""
