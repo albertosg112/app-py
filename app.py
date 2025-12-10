@@ -44,9 +44,7 @@ DUCKDUCKGO_ENABLED = st.secrets.get("DUCKDUCKGO_ENABLED", "true").lower() == "tr
 # Configuración de parámetros
 MAX_BACKGROUND_TASKS = 1  # ¡CRÍTICO para SQLite! Evita el error "database is locked"
 CACHE_EXPIRATION = timedelta(hours=12)
-# MODELOS DISPONIBLES EN GROQ (¡CORREGIDO!)
-GROQ_MODEL = "llama3-8b-8192"  # Modelo rápido y gratuito (8B parámetros)
-# Alternativas: "llama3-70b-8192" (más potente pero más lento), "mixtral-8x7b-32768", "gemma-7b-it"
+GROQ_MODEL = "llama3-8b-8192"  # Modelo rápido y gratuito
 
 # Sistema de caché para búsquedas frecuentes
 search_cache = {}
@@ -90,7 +88,8 @@ class RecursoEducativo:
 # ----------------------------
 # CONFIGURACIÓN INICIAL Y BASE DE DATOS AVANZADA
 # ----------------------------
-DB_PATH = "cursos_inteligentes_v2.db"
+# CORRECCIÓN IMPORTANTE: Cambiamos a v3 para resetear la estructura y evitar errores previos
+DB_PATH = "cursos_inteligentes_v3.db"
 
 def init_advanced_database():
     """Inicializa la base de datos avanzada con todas las tablas necesarias"""
@@ -335,7 +334,7 @@ def extraer_plataforma(url: str) -> str:
         return dominio.title()
 
 # ----------------------------
-# SISTEMA DE ANÁLISIS CON GROQ IA (CORREGIDO)
+# SISTEMA DE ANÁLISIS CON GROQ IA
 # ----------------------------
 async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict) -> Dict:
     """Usa Groq API para analizar profundamente la calidad y relevancia de un curso"""
@@ -390,7 +389,7 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
         }}
         """
         
-        # Llamada a Groq API - ¡CORREGIDO CON MODELO REAL!
+        # Llamada a Groq API
         response = client.chat.completions.create(
             messages=[
                 {
@@ -398,7 +397,7 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
                     "content": prompt,
                 }
             ],
-            model=GROQ_MODEL,  # ¡MODELO REAL DISPONIBLE EN GROQ!
+            model=GROQ_MODEL,
             temperature=0.3,
             max_tokens=1000,
             response_format={"type": "json_object"},
@@ -529,8 +528,6 @@ async def buscar_recursos_multicapa(tema: str, idioma: str, nivel: str) -> List[
     }
     
     return resultados[:10]  # Limitar a 10 resultados finales
-
-# ... (el resto de las funciones de búsqueda permanecen igual)
 
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     """Búsqueda en Google Custom Search API con filtros educativos"""
