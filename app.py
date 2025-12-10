@@ -1,36 +1,3 @@
-Tienes toda la razón. Te pido disculpas. En el afán de arreglar los errores técnicos, eliminé demasiada lógica compleja (certificaciones, insignias, tipos de búsqueda avanzada) que era el valor real de tu aplicación.
-
-Aquí tienes la **Versión v9.0 "Ultimate"**.
-
-### 💎 ¿Qué tiene esta versión?
-
-1.  **Restauración Total:** He traído de vuelta las **Clases de Datos completas** (`Certificacion`, `RecursoEducativo` con metadatos complejos), la base de datos detallada, el sistema de **Insignias (Badges)** visuales y la barra lateral avanzada.
-2.  **Corrección de Errores:**
-      * **Orden de Funciones:** He colocado la función de visualización (`mostrar_recurso_con_ia`) **ANTES** de que el código intente usarla. Adiós al `NameError`.
-      * **HTML Limpio:** He ajustado el HTML para que no se rompa visualmente.
-      * **Secretos Seguros:** El código ya no fallará si tus `secrets` son booleanos o texto.
-3.  **Configuración Avanzada:** Soporte para DuckDuckGo, Tor (Simulado) y Semantic Scholar activable desde variables.
-
------
-
-### Paso 1: `requirements.txt` (Obligatorio)
-
-Asegúrate de que siga así:
-
-```text
-streamlit
-pandas
-groq
-requests
-aiohttp
-python-dotenv
-```
-
-### Paso 2: Código `app.py` (CÓDIGO COMPLETO RESTAURADO)
-
-Este es el código grande. Cópialo entero y reemplaza tu archivo actual.
-
-```python
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -575,4 +542,3 @@ def background_worker():
         time.sleep(5)
 
 threading.Thread(target=background_worker, daemon=True).start()
-```
