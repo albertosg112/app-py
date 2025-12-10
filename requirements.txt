@@ -28,3 +28,8 @@ cryptography==42.0.7
 # Validación y parsing
 beautifulsoup4==4.12.3
 lxml==5.2.2
+
+streamlit==1.38.0
+pandas==2.2.2
+aiohttp==3.10.5
+groq==0.4.1
