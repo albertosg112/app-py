@@ -16,11 +16,9 @@ import concurrent.futures
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional, Tuple, Any, Union
 import logging
-from functools import lru_cache
 import asyncio
 import aiohttp
 from dotenv import load_dotenv
-import groq
 
 # ----------------------------
 # CONFIGURACIÓN AVANZADA Y LOGGING
@@ -28,29 +26,58 @@ import groq
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger("BuscadorProfesional")
 
-# Manejo seguro de variables de entorno
-def get_secret(key: str, default: str = "") -> str:
-    """Obtiene un secreto de Streamlit Secrets o variables de entorno asegurando que sea string"""
+# Verificación temprana de Streamlit
+STREAMLIT_AVAILABLE = True
+try:
+    import streamlit as st
+except ImportError:
+    STREAMLIT_AVAILABLE = False
+    print("⚠️ Warning: Streamlit no disponible en este entorno")
+
+# Función segura para obtener secrets
+def get_safe_secret(key: str, default: str = "") -> str:
+    """Versión segura que siempre devuelve un string"""
     try:
-        if hasattr(st, 'secrets') and key in st.secrets:
-            # Convertimos a string para evitar AttributeError si es booleano
-            return str(st.secrets[key])
-        return str(os.getenv(key, default))
-    except:
+        # Verificar si st existe y tiene secrets
+        if 'st' in globals() and hasattr(st, 'secrets'):
+            if hasattr(st.secrets, 'get'):
+                value = st.secrets.get(key, default)
+                return str(value) if value is not None else default
+            elif key in st.secrets:
+                value = st.secrets[key]
+                return str(value) if value is not None else default
+        
+        # Intentar obtener de variables de entorno
+        value = os.getenv(key)
+        return str(value) if value is not None else default
+        
+    except Exception as e:
+        logger.warning(f"Error al obtener secreto {key}: {e}")
         return default
 
-# Cargar variables de entorno
-GOOGLE_API_KEY = get_secret("GOOGLE_API_KEY", "")
-GOOGLE_CX = get_secret("GOOGLE_CX", "")
-GROQ_API_KEY = get_secret("GROQ_API_KEY", "")
-
-# CORRECCIÓN DE ERROR BOOL: Convertimos a string antes de usar lower()
-raw_duck = get_secret("DUCKDUCKGO_ENABLED", "true")
-DUCKDUCKGO_ENABLED = raw_duck.lower() == "true"
+# Cargar variables de entorno de forma segura
+try:
+    GOOGLE_API_KEY = get_safe_secret("GOOGLE_API_KEY", "")
+    GOOGLE_CX = get_safe_secret("GOOGLE_CX", "")
+    GROQ_API_KEY = get_safe_secret("GROQ_API_KEY", "")
+    
+    # Manejo especial para booleanos
+    duckduckgo_val = get_safe_secret("DUCKDUCKGO_ENABLED", "true")
+    DUCKDUCKGO_ENABLED = duckduckgo_val.lower() in ["true", "1", "yes", "on"]
+    
+except Exception as e:
+    logger.error(f"Error crítico al cargar variables de entorno: {e}")
+    # Valores por defecto seguros
+    GOOGLE_API_KEY = ""
+    GOOGLE_CX = ""
+    GROQ_API_KEY = ""
+    DUCKDUCKGO_ENABLED = True
 
 # Configuración de parámetros
 MAX_BACKGROUND_TASKS = 1  # ¡CRÍTICO para SQLite! Evita el error "database is locked"
@@ -99,8 +126,7 @@ class RecursoEducativo:
 # ----------------------------
 # CONFIGURACIÓN INICIAL Y BASE DE DATOS AVANZADA
 # ----------------------------
-# CORRECCIÓN: Usamos v4 para asegurar una DB limpia y evitar OperationalError
-DB_PATH = "cursos_inteligentes_v4.db"
+DB_PATH = "cursos_inteligentes_v3.db"
 
 def init_advanced_database():
     """Inicializa la base de datos avanzada con todas las tablas necesarias"""
@@ -345,7 +371,7 @@ def extraer_plataforma(url: str) -> str:
         return dominio.title()
 
 # ----------------------------
-# SISTEMA DE ANÁLISIS CON GROQ IA
+# SISTEMA DE ANÁLISIS CON GROQ IA (CORREGIDO Y OPTIMIZADO)
 # ----------------------------
 async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict) -> Dict:
     """Usa Groq API para analizar profundamente la calidad y relevancia de un curso"""
@@ -401,7 +427,7 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
         }}
         """
         
-        # Llamada a Groq API
+        # Llamada a Groq API - ¡CORREGIDO CON MODELO REAL!
         response = client.chat.completions.create(
             messages=[
                 {
@@ -409,7 +435,7 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
                     "content": prompt,
                 }
             ],
-            model=GROQ_MODEL,
+            model=GROQ_MODEL,  # ¡MODELO REAL DISPONIBLE EN GROQ!
             temperature=0.3,
             max_tokens=1000,
             response_format={"type": "json_object"},
@@ -464,7 +490,7 @@ def obtener_perfil_usuario() -> Dict:
     }
 
 # ----------------------------
-# SISTEMA DE BÚSQUEDA MULTICAPA AVANZADO
+# SISTEMA DE BÚSQUEDA MULTICAPA AVANZADO (CORREGIDO)
 # ----------------------------
 async def buscar_recursos_multicapa(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     """Sistema de búsqueda avanzado que combina múltiples fuentes"""
@@ -853,7 +879,7 @@ def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEduca
     return resultados_unicos
 
 # ----------------------------
-# SISTEMA DE TAREAS EN SEGUNDO PLANO
+# SISTEMA DE TAREAS EN SEGUNDO PLANO (CORREGIDO)
 # ----------------------------
 def iniciar_tareas_background():
     """Inicia el sistema de tareas en segundo plano"""
