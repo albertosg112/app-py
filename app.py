@@ -1487,22 +1487,73 @@ with st.container():
 # ----------------------------
 # FUNCIONES DE MOSTRAR RESULTADOS (MOVIDA ARRIBA PARA EVITAR NAMEERROR)
 # ----------------------------
-def mostrar_recurso_con_ia(recurso: RecursoEducativo, index: int):
-    """Muestra un recurso con análisis de IA integrado"""
+def mostrar_recurso_con_ia(res: RecursoEducativo, index: int):
+    """Muestra la tarjeta del recurso con diseño PRO y HTML corregido"""
     
-    # Clases CSS para estilos
-    color_clase = {
-        "Principiante": "nivel-principiante",
-        "Intermedio": "nivel-intermedio", 
-        "Avanzado": "nivel-avanzado"
-    }.get(recurso.nivel, "")
+    # 1. Definir colores según el tipo de recurso
+    colors = {
+        "conocida": "#2E7D32", # Verde (Oficial)
+        "oculta": "#E65100",   # Naranja (Joya oculta)
+        "semantica": "#1565C0",# Azul (Académico)
+        "tor": "#6A1B9A",      # Morado (Deep Web)
+        "ia": "#00838F",       # Cyan (Generado por IA)
+        "simulada": "#455A64"  # Gris (Fallback)
+    }
+    color = colors.get(res.tipo, "#424242")
     
-    extra_class = "plataforma-oculta" if recurso.tipo == "oculta" else ""
-    ia_class = "con-analisis-ia" if hasattr(recurso, 'metadatos_analisis') and recurso.metadatos_analisis else ""
-    
-    # Extraer análisis de IA si existe
-    analisis_ia = getattr(recurso, 'metadatos_analisis', None)
-    tiene_analisis = analisis_ia is not None
+    # 2. Generar Badges (Etiquetas) de Certificación
+    badges_html = ""
+    if res.certificacion:
+        c = res.certificacion
+        if c.tipo == "gratuito":
+            badges_html += f"<span style='background:#4CAF50; color:white; padding:2px 8px; border-radius:4px; font-size:0.7em; margin-right:5px;'>✅ Certificado Gratis</span>"
+        elif c.tipo == "audit":
+            badges_html += f"<span style='background:#FF9800; color:white; padding:2px 8px; border-radius:4px; font-size:0.7em; margin-right:5px;'>🎓 Auditoría Gratis</span>"
+        if c.validez_internacional:
+            badges_html += f"<span style='background:#2196F3; color:white; padding:2px 8px; border-radius:4px; font-size:0.7em; margin-right:5px;'>🌍 Global</span>"
+
+    # 3. Generar Sección de Análisis IA
+    ia_html = ""
+    if res.metadatos_analisis:
+        meta = res.metadatos_analisis
+        calidad = float(meta.get('calidad_ia', 0.0)) * 100
+        rec = meta.get('recomendacion_personalizada', 'Recurso verificado.')
+        
+        # HTML del bloque IA
+        ia_html = f"""
+        <div style='background-color: #f8f9fa; padding: 12px; border-radius: 6px; margin-top: 10px; border-left: 4px solid {color};'>
+            <div style='color: #333; font-weight: bold; margin-bottom: 4px;'>🤖 Análisis IA:</div>
+            <div style='color: #555; font-size: 0.95em; margin-bottom: 8px;'>{rec}</div>
+            <span style='background: #e8f5e9; color: #2e7d32; padding: 3px 8px; border-radius: 10px; font-size: 0.8em; font-weight: bold;'>
+                Calidad Didáctica: {calidad:.0f}%
+            </span>
+        </div>
+        """
+
+    # 4. Renderizar Tarjeta Completa (HTML Compacto)
+    # Nota: El HTML está pegado a la izquierda para evitar errores de indentación de Python
+    html_card = f"""
+<div style="border: 1px solid #e0e0e0; border-top: 5px solid {color}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <h3 style="margin: 0 0 10px 0; color: #333; font-size: 1.2rem;">{res.titulo}</h3>
+        <span style="background-color: {color}; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.65rem; text-transform: uppercase; font-weight: bold;">{res.tipo}</span>
+    </div>
+    <div style="color: #666; font-size: 0.85rem; margin-bottom: 12px;">
+        <span>🏛️ {res.plataforma}</span> &nbsp;•&nbsp; <span>📚 {res.nivel}</span> &nbsp;•&nbsp; <span>⭐ {res.confianza*100:.0f}% Confianza</span>
+    </div>
+    <div style="margin-bottom: 12px;">{badges_html}</div>
+    <p style="color: #444; font-size: 0.95rem; line-height: 1.5; margin: 0 0 15px 0;">{res.descripcion}</p>
+    {ia_html}
+    <div style="margin-top: 15px; text-align: right;">
+        <a href="{res.url}" target="_blank" style="text-decoration: none;">
+            <button style="background: linear-gradient(90deg, {color}, #333); color: white; border: none; padding: 10px 25px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: opacity 0.2s;">
+                Acceder al Recurso ➡️
+            </button>
+        </a>
+    </div>
+</div>
+"""
+    st.markdown(html_card, unsafe_allow_html=True)
     
     # Badge de certificación
     cert_badge = ""
@@ -1776,3 +1827,4 @@ logger.info("✅ Sistema de búsqueda profesional con IA Groq iniciado correctam
 logger.info(f"🧠 IA Avanzada: Activa con Groq API - Versión 3.0.1")
 logger.info(f"🌐 Plataformas indexadas: {len(IDIOMAS)} idiomas soportados")
 logger.info(f"⚡ Rendimiento optimizado para producción empresarial")
+
