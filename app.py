@@ -243,8 +243,6 @@ import networkx as nx
 import community as community_louvain
 import pyvis
 from pyvis.network import Network
-import igraph
-import python igraph
 import pydot
 import graphviz
 import matplotlib.colors as mcolors
@@ -5001,5 +4999,6 @@ if __name__ == "__main__":
             logger.info("✅ Recursos limpiados correctamente")
         except Exception as e:
             logger.error(f"❌ Error limpiando recursos: {e}")
+
 
 
