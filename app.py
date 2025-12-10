@@ -35,11 +35,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BuscadorProfesional")
 
-# Cargar variables de entorno desde Streamlit Secrets o .env
-GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "") if hasattr(st, 'secrets') else os.getenv("GOOGLE_API_KEY", "")
-GOOGLE_CX = st.secrets.get("GOOGLE_CX", "") if hasattr(st, 'secrets') else os.getenv("GOOGLE_CX", "")
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, 'secrets') else os.getenv("GROQ_API_KEY", "")
-DUCKDUCKGO_ENABLED = st.secrets.get("DUCKDUCKGO_ENABLED", "true").lower() == "true" if hasattr(st, 'secrets') else os.getenv("DUCKDUCKGO_ENABLED", "true").lower() == "true"
+# Cargar variables de entorno de forma segura
+def get_secret(key, default=""):
+    """Función auxiliar para obtener secretos sin errores de tipo"""
+    if hasattr(st, 'secrets'):
+        return str(st.secrets.get(key, default))
+    return str(os.getenv(key, default))
+
+GOOGLE_API_KEY = get_secret("GOOGLE_API_KEY")
+GOOGLE_CX = get_secret("GOOGLE_CX")
+GROQ_API_KEY = get_secret("GROQ_API_KEY")
+
+# Corrección del error AttributeError: Convertimos a string antes de usar lower()
+raw_duck = get_secret("DUCKDUCKGO_ENABLED", "true")
+DUCKDUCKGO_ENABLED = raw_duck.lower() == "true"
 
 # Configuración de parámetros
 MAX_BACKGROUND_TASKS = 1  # ¡CRÍTICO para SQLite! Evita el error "database is locked"
@@ -88,7 +97,7 @@ class RecursoEducativo:
 # ----------------------------
 # CONFIGURACIÓN INICIAL Y BASE DE DATOS AVANZADA
 # ----------------------------
-# CORRECCIÓN IMPORTANTE: Cambiamos a v3 para resetear la estructura y evitar errores previos
+# Usamos v3 para asegurar una base de datos limpia y sin errores de columnas
 DB_PATH = "cursos_inteligentes_v3.db"
 
 def init_advanced_database():
