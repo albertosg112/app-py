@@ -67,9 +67,10 @@ try:
     GOOGLE_CX = get_safe_secret("GOOGLE_CX", "")
     GROQ_API_KEY = get_safe_secret("GROQ_API_KEY", "")
     
-    # Manejo especial para booleanos
+    # Manejo especial para booleanos - CORREGIDO PARA EVITAR AttributeError
     duckduckgo_val = get_safe_secret("DUCKDUCKGO_ENABLED", "true")
-    DUCKDUCKGO_ENABLED = duckduckgo_val.lower() in ["true", "1", "yes", "on"]
+    # Aseguramos que sea string antes de lower()
+    DUCKDUCKGO_ENABLED = str(duckduckgo_val).lower() in ["true", "1", "yes", "on"]
     
 except Exception as e:
     logger.error(f"Error crítico al cargar variables de entorno: {e}")
@@ -126,7 +127,8 @@ class RecursoEducativo:
 # ----------------------------
 # CONFIGURACIÓN INICIAL Y BASE DE DATOS AVANZADA
 # ----------------------------
-DB_PATH = "cursos_inteligentes_v3.db"
+# CAMBIADO A v4 PARA EVITAR CONFLICTOS CON VERSIONES ANTERIORES
+DB_PATH = "cursos_inteligentes_v4.db"
 
 def init_advanced_database():
     """Inicializa la base de datos avanzada con todas las tablas necesarias"""
@@ -1483,6 +1485,123 @@ with st.container():
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ----------------------------
+# FUNCIONES DE MOSTRAR RESULTADOS (MOVIDA ARRIBA PARA EVITAR NAMEERROR)
+# ----------------------------
+def mostrar_recurso_con_ia(recurso: RecursoEducativo, index: int):
+    """Muestra un recurso con análisis de IA integrado"""
+    
+    # Clases CSS para estilos
+    color_clase = {
+        "Principiante": "nivel-principiante",
+        "Intermedio": "nivel-intermedio", 
+        "Avanzado": "nivel-avanzado"
+    }.get(recurso.nivel, "")
+    
+    extra_class = "plataforma-oculta" if recurso.tipo == "oculta" else ""
+    ia_class = "con-analisis-ia" if hasattr(recurso, 'metadatos_analisis') and recurso.metadatos_analisis else ""
+    
+    # Extraer análisis de IA si existe
+    analisis_ia = getattr(recurso, 'metadatos_analisis', None)
+    tiene_analisis = analisis_ia is not None
+    
+    # Badge de certificación
+    cert_badge = ""
+    if recurso.certificacion:
+        cert_type = recurso.certificacion.tipo
+        if cert_type == "gratuito":
+            cert_badge = f'<span class="certificado-badge certificado-gratuito">✅ Certificado Gratuito</span>'
+        elif cert_type == "audit":
+            cert_badge = f'<span class="certificado-badge certificado-internacional">🎓 Modo Audit (Gratuito)</span>'
+        else:
+            cert_badge = f'<span class="certificado-badge certificado-internacional">💰 Certificado de Pago</span>'
+        
+        if recurso.certificacion.validez_internacional:
+            cert_badge += f' <span class="certificado-badge certificado-internacional">🌐 Validez Internacional</span>'
+    
+    # Análisis de IA
+    ia_content = ""
+    if tiene_analisis:
+        calidad_ia = analisis_ia.get("calidad_ia", recurso.confianza)
+        relevancia_ia = analisis_ia.get("relevancia_ia", recurso.confianza)
+        recomendacion = analisis_ia.get("recomendacion_personalizada", "")
+        razones = analisis_ia.get("razones_calidad", [])
+        advertencias = analisis_ia.get("advertencias", [])
+        
+        ia_content = f"""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    color: white; padding: 12px; border-radius: 12px; margin: 15px 0; 
+                    border-left: 3px solid #ffeb3b;">
+            <h4 style="margin: 0 0 8px 0; color: #fff9c4;">🧠 Análisis de Calidad con IA</h4>
+            <p style="margin: 0; line-height: 1.5;">{recomendacion}</p>
+        </div>
+        
+        <div style="display: flex; gap: 10px; margin: 15px 0; flex-wrap: wrap;">
+            <span style="background: linear-gradient(to right, #4CAF50, #8BC34A); color: white; 
+                        padding: 6px 12px; border-radius: 15px; font-size: 0.9rem; font-weight: bold;">
+                Calidad IA: {(calidad_ia * 100):.0f}%
+            </span>
+            <span style="background: linear-gradient(to right, #2196F3, #3F51B5); color: white; 
+                        padding: 6px 12px; border-radius: 15px; font-size: 0.9rem; font-weight: bold;">
+                Relevancia: {(relevancia_ia * 100):.0f}%
+            </span>
+        </div>
+        """
+        
+        if razones:
+            razones_html = "".join([f"<li>{razon}</li>" for razon in razones[:3]])
+            ia_content += f"""
+            <div style="margin: 15px 0; padding: 12px; background: #e3f2fd; border-radius: 8px; border-left: 3px solid #2196F3;">
+                <strong>🔍 Razones de Calidad:</strong>
+                <ul style="margin: 8px 0 0 20px; padding-left: 0; color: #1565c0;">
+                    {razones_html}
+                </ul>
+            </div>
+            """
+        
+        if advertencias:
+            advertencias_html = "".join([f"<li>{adv}</li>" for adv in advertencias[:2]])
+            ia_content += f"""
+            <div style="margin: 15px 0; padding: 12px; background: #fff8e1; border-radius: 8px; border-left: 3px solid #ffc107;">
+                <strong>⚠️ Advertencias:</strong>
+                <ul style="margin: 8px 0 0 20px; padding-left: 0; color: #e65100;">
+                    {advertencias_html}
+                </ul>
+            </div>
+            """
+    
+    st.markdown(f"""
+    <div class="resultado-card {color_clase} {extra_class} {ia_class} fade-in" style="animation-delay: {index * 0.1}s;">
+        <h3>🎯 {recurso.titulo}</h3>
+        <p><strong>📚 Nivel:</strong> {recurso.nivel} | <strong>🌐 Plataforma:</strong> {recurso.plataforma}</p>
+        <p>📝 {recurso.descripcion}</p>
+        
+        {cert_badge}
+        
+        {ia_content}
+        
+        <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
+            <a href="{recurso.url}" target="_blank" style="flex: 1; min-width: 200px; 
+                background: linear-gradient(to right, #6a11cb, #2575fc); color: white; 
+                padding: 12px 20px; text-decoration: none; border-radius: 8px; 
+                font-weight: bold; text-align: center; transition: all 0.3s ease;">
+                ➡️ Acceder al Recurso
+            </a>
+        </div>
+        
+        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee; font-size: 0.9rem; color: #666;">
+            <p style="margin: 5px 0;">
+                <strong>🔍 Confianza:</strong> {(recurso.confianza * 100):.1f}% | 
+                <strong>✅ Verificado:</strong> {datetime.fromisoformat(recurso.ultima_verificacion).strftime('%d/%m/%Y')}
+            </p>
+            <p style="margin: 5px 0;">
+                <strong>🌍 Idioma:</strong> {recurso.idioma.upper()} | 
+                <strong>🏷️ Categoría:</strong> {recurso.categoria}
+            </p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ----------------------------
 # SISTEMA DE BÚSQUEDA AVANZADO CON IA
 # ----------------------------
 if buscar and tema.strip():
@@ -1652,123 +1771,6 @@ st.markdown("""
     </div>
 </div>
 """.format(datetime.now().strftime('%d/%m/%Y %H:%M')), unsafe_allow_html=True)
-
-# ----------------------------
-# FUNCIONES DE MOSTRAR RESULTADOS
-# ----------------------------
-def mostrar_recurso_con_ia(recurso: RecursoEducativo, index: int):
-    """Muestra un recurso con análisis de IA integrado"""
-    
-    # Clases CSS para estilos
-    color_clase = {
-        "Principiante": "nivel-principiante",
-        "Intermedio": "nivel-intermedio", 
-        "Avanzado": "nivel-avanzado"
-    }.get(recurso.nivel, "")
-    
-    extra_class = "plataforma-oculta" if recurso.tipo == "oculta" else ""
-    ia_class = "con-analisis-ia" if hasattr(recurso, 'metadatos_analisis') and recurso.metadatos_analisis else ""
-    
-    # Extraer análisis de IA si existe
-    analisis_ia = getattr(recurso, 'metadatos_analisis', None)
-    tiene_analisis = analisis_ia is not None
-    
-    # Badge de certificación
-    cert_badge = ""
-    if recurso.certificacion:
-        cert_type = recurso.certificacion.tipo
-        if cert_type == "gratuito":
-            cert_badge = f'<span class="certificado-badge certificado-gratuito">✅ Certificado Gratuito</span>'
-        elif cert_type == "audit":
-            cert_badge = f'<span class="certificado-badge certificado-internacional">🎓 Modo Audit (Gratuito)</span>'
-        else:
-            cert_badge = f'<span class="certificado-badge certificado-internacional">💰 Certificado de Pago</span>'
-        
-        if recurso.certificacion.validez_internacional:
-            cert_badge += f' <span class="certificado-badge certificado-internacional">🌐 Validez Internacional</span>'
-    
-    # Análisis de IA
-    ia_content = ""
-    if tiene_analisis:
-        calidad_ia = analisis_ia.get("calidad_ia", recurso.confianza)
-        relevancia_ia = analisis_ia.get("relevancia_ia", recurso.confianza)
-        recomendacion = analisis_ia.get("recomendacion_personalizada", "")
-        razones = analisis_ia.get("razones_calidad", [])
-        advertencias = analisis_ia.get("advertencias", [])
-        
-        ia_content = f"""
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                    color: white; padding: 12px; border-radius: 12px; margin: 15px 0; 
-                    border-left: 3px solid #ffeb3b;">
-            <h4 style="margin: 0 0 8px 0; color: #fff9c4;">🧠 Análisis de Calidad con IA</h4>
-            <p style="margin: 0; line-height: 1.5;">{recomendacion}</p>
-        </div>
-        
-        <div style="display: flex; gap: 10px; margin: 15px 0; flex-wrap: wrap;">
-            <span style="background: linear-gradient(to right, #4CAF50, #8BC34A); color: white; 
-                        padding: 6px 12px; border-radius: 15px; font-size: 0.9rem; font-weight: bold;">
-                Calidad IA: {(calidad_ia * 100):.0f}%
-            </span>
-            <span style="background: linear-gradient(to right, #2196F3, #3F51B5); color: white; 
-                        padding: 6px 12px; border-radius: 15px; font-size: 0.9rem; font-weight: bold;">
-                Relevancia: {(relevancia_ia * 100):.0f}%
-            </span>
-        </div>
-        """
-        
-        if razones:
-            razones_html = "".join([f"<li>{razon}</li>" for razon in razones[:3]])
-            ia_content += f"""
-            <div style="margin: 15px 0; padding: 12px; background: #e3f2fd; border-radius: 8px; border-left: 3px solid #2196F3;">
-                <strong>🔍 Razones de Calidad:</strong>
-                <ul style="margin: 8px 0 0 20px; padding-left: 0; color: #1565c0;">
-                    {razones_html}
-                </ul>
-            </div>
-            """
-        
-        if advertencias:
-            advertencias_html = "".join([f"<li>{adv}</li>" for adv in advertencias[:2]])
-            ia_content += f"""
-            <div style="margin: 15px 0; padding: 12px; background: #fff8e1; border-radius: 8px; border-left: 3px solid #ffc107;">
-                <strong>⚠️ Advertencias:</strong>
-                <ul style="margin: 8px 0 0 20px; padding-left: 0; color: #e65100;">
-                    {advertencias_html}
-                </ul>
-            </div>
-            """
-    
-    st.markdown(f"""
-    <div class="resultado-card {color_clase} {extra_class} {ia_class} fade-in" style="animation-delay: {index * 0.1}s;">
-        <h3>🎯 {recurso.titulo}</h3>
-        <p><strong>📚 Nivel:</strong> {recurso.nivel} | <strong>🌐 Plataforma:</strong> {recurso.plataforma}</p>
-        <p>📝 {recurso.descripcion}</p>
-        
-        {cert_badge}
-        
-        {ia_content}
-        
-        <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-            <a href="{recurso.url}" target="_blank" style="flex: 1; min-width: 200px; 
-                background: linear-gradient(to right, #6a11cb, #2575fc); color: white; 
-                padding: 12px 20px; text-decoration: none; border-radius: 8px; 
-                font-weight: bold; text-align: center; transition: all 0.3s ease;">
-                ➡️ Acceder al Recurso
-            </a>
-        </div>
-        
-        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee; font-size: 0.9rem; color: #666;">
-            <p style="margin: 5px 0;">
-                <strong>🔍 Confianza:</strong> {(recurso.confianza * 100):.1f}% | 
-                <strong>✅ Verificado:</strong> {datetime.fromisoformat(recurso.ultima_verificacion).strftime('%d/%m/%Y')}
-            </p>
-            <p style="margin: 5px 0;">
-                <strong>🌍 Idioma:</strong> {recurso.idioma.upper()} | 
-                <strong>🏷️ Categoría:</strong> {recurso.categoria}
-            </p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
 
 logger.info("✅ Sistema de búsqueda profesional con IA Groq iniciado correctamente")
 logger.info(f"🧠 IA Avanzada: Activa con Groq API - Versión 3.0.1")
