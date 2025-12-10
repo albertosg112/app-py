@@ -1244,7 +1244,7 @@ class SecurityManager:
         
         logger.info("✅ SecurityManager inicializado")
     
-    def generate_jwt_token(self, user_id: str, user_ dict = None) -> str:
+    def generate_jwt_token(self, user_id: str, user_data: dict = None) -> str:
         """Genera un token JWT para autenticación"""
         payload = {
             'user_id': user_id,
@@ -4999,6 +4999,7 @@ if __name__ == "__main__":
             logger.info("✅ Recursos limpiados correctamente")
         except Exception as e:
             logger.error(f"❌ Error limpiando recursos: {e}")
+
 
 
 
