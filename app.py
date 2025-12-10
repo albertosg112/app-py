@@ -13,37 +13,6 @@
 # - Utilidades para limpieza, validación, normalización, test integrado básico
 # - Persistencia de estado en session_state y sincronización con la DB
 # - Extensiones (DDG opcional), import/export de búsquedas, modo offline con caché
-REQUISITOS 
-# Framework principal
-streamlit==1.39.0
-
-# Manejo de datos
-pandas==2.2.2
-numpy==1.26.4
-
-# Base de datos SQLite
-sqlalchemy==2.0.31
-
-# HTTP y APIs
-requests==2.32.3
-aiohttp==3.9.5
-
-# Utilidades
-python-dateutil==2.9.0.post0
-pytz==2024.1
-
-# Logging avanzado
-loguru==0.7.2
-
-# IA opcional (Groq)
-groq==0.4.1
-
-# Seguridad y hashing
-cryptography==42.0.7
-
-# Validación y parsing
-beautifulsoup4==4.12.3
-lxml==5.2.2
 
 
 
@@ -1729,3 +1698,4 @@ if __name__ == "__main__":
     main_extended()
     # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
     # end_session() podría llamarse en teardown manual si se desea.
+
