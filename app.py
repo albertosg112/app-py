@@ -3,8 +3,8 @@
 # - Corrige pequeños bugs y mejora la robustez
 # - Mejora la UX: barra de progreso, estados de IA, chatbot más limpio
 # - Optimiza rendimiento y claridad del código
-# - MODIFICACIÓN USUARIO: Eliminación de texto descriptivo en resultados (solo botón y datos clave)
-
+# - MEJORA: Integración con Groq más robusta y segura
+# - MEJORA: Presentación de resultados con botón de enlace estilizado
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -23,6 +23,7 @@ from typing import List, Dict, Optional, Any
 import logging
 import asyncio
 import aiohttp
+from concurrent.futures import ThreadPoolExecutor # Para ejecutar código síncrono de Groq de forma asíncrona
 
 # ----------------------------
 # LOGGING
@@ -41,7 +42,6 @@ GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "") if hasattr(st, 'secrets') 
 GOOGLE_CX = st.secrets.get("GOOGLE_CX", "") if hasattr(st, 'secrets') else os.getenv("GOOGLE_CX", "")
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, 'secrets') else os.getenv("GROQ_API_KEY", "")
 DUCKDUCKGO_ENABLED = (st.secrets.get("DUCKDUCKGO_ENABLED", "false").lower() == "true") if hasattr(st, 'secrets') else (os.getenv("DUCKDUCKGO_ENABLED", "false").lower() == "true")
-
 MAX_BACKGROUND_TASKS = 1
 CACHE_EXPIRATION = timedelta(hours=12)
 GROQ_MODEL = "llama-3.1-70b-versatile"  # Modelo actualizado de Groq
@@ -55,11 +55,49 @@ try:
     import groq
     if GROQ_API_KEY:
         GROQ_AVAILABLE = True
-        logger.info("✅ Groq API disponible para análisis en segundo plano")
+        logger.info("✅ Biblioteca 'groq' importada y API Key presente.")
+    else:
+        logger.warning("⚠️ API Key de Groq no encontrada en secrets/config.")
 except ImportError:
     logger.warning("⚠️ Biblioteca 'groq' no instalada - Análisis de IA no disponible")
 except Exception as e:
     logger.warning(f"⚠️ Error al inicializar Groq: {e}")
+
+# Clase auxiliar para usar cliente Groq de forma asíncrona
+class AsyncGroq:
+    def __init__(self, api_key: str):
+        self.client = groq.Groq(api_key=api_key)
+
+    async def chat_completion(self, messages, model, temperature=0.3, max_tokens=900, response_format=None):
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor()
+        try:
+            if response_format:
+                response = await loop.run_in_executor(
+                    executor,
+                    lambda: self.client.chat.completions.create(
+                        messages=messages,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
+                    )
+                )
+            else:
+                response = await loop.run_in_executor(
+                    executor,
+                    lambda: self.client.chat.completions.create(
+                        messages=messages,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                )
+            return response
+        finally:
+            executor.shutdown(wait=False) # Cierra el executor sin esperar
+
+async_groq_client = AsyncGroq(GROQ_API_KEY) if GROQ_AVAILABLE and GROQ_API_KEY else None
 
 # ----------------------------
 # MODELOS DE DATOS
@@ -397,10 +435,10 @@ def extraer_plataforma(url: str) -> str:
     return partes[-2].title() if len(partes) > 1 else dominio.title()
 
 # ----------------------------
-# INTEGRACIÓN GROQ (opcional)
+# INTEGRACIÓN GROQ (Mejorada)
 # ----------------------------
 async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict) -> Dict:
-    if not GROQ_AVAILABLE or not GROQ_API_KEY:
+    if not GROQ_AVAILABLE or not GROQ_API_KEY or not async_groq_client:
         return {
             "calidad_educativa": recurso.confianza,
             "relevancia_usuario": recurso.confianza,
@@ -409,8 +447,8 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
             "recomendacion_personalizada": "Curso verificado con búsqueda estándar",
             "advertencias": ["Análisis de IA no disponible en este momento"]
         }
+
     try:
-        client = groq.Groq(api_key=GROQ_API_KEY)
         prompt = f"""
         Evalúa el curso:
         TÍTULO: {recurso.titulo}
@@ -435,13 +473,15 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
             "advertencias": []
         }}
         """
-        response = client.chat.completions.create(
+
+        response = await async_groq_client.chat_completion(
             messages=[{"role": "user", "content": prompt}],
-            model=GROQ_MODEL, # Modelo actualizado
+            model=GROQ_MODEL,
             temperature=0.3,
             max_tokens=900,
             response_format={"type": "json_object"},
         )
+
         contenido = response.choices[0].message.content
         # Corrección: Asegurar que el contenido sea un JSON válido
         try:
@@ -457,14 +497,23 @@ async def analizar_calidad_curso(recurso: RecursoEducativo, perfil_usuario: Dict
                 "recomendacion_personalizada": "Curso verificado con búsqueda estándar",
                 "advertencias": ["La IA devolvió un formato inesperado."]
             }
-
-    except Exception as e:
-        logger.error(f"Error en análisis con Groq: {e}")
+    except groq.APIError as e:
+        logger.error(f"Error de API Groq: {e}")
         return {
             "calidad_educativa": recurso.confianza,
             "relevancia_usuario": recurso.confianza,
-            "razones_calidad": [f"Error IA: {str(e)}"],
-            "razones_relevancia": [f"Error IA: {str(e)}"],
+            "razones_calidad": [f"Error API Groq: {str(e)}"],
+            "razones_relevancia": [f"Error API Groq: {str(e)}"],
+            "recomendacion_personalizada": "Curso verificado con búsqueda estándar",
+            "advertencias": ["API de IA temporalmente no disponible"]
+        }
+    except Exception as e:
+        logger.error(f"Error general en análisis con Groq: {e}")
+        return {
+            "calidad_educativa": recurso.confianza,
+            "relevancia_usuario": recurso.confianza,
+            "razones_calidad": [f"Error general: {str(e)}"],
+            "razones_relevancia": [f"Error general: {str(e)}"],
             "recomendacion_personalizada": "Curso verificado con búsqueda estándar",
             "advertencias": ["Análisis de IA temporalmente no disponible"]
         }
@@ -488,7 +537,7 @@ async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[Recur
         query_base = f"{tema} curso gratuito certificado"
         if nivel not in ("Cualquiera", "Todos"):
             query_base += f" nivel {nivel.lower()}"
-        url = "https://www.googleapis.com/customsearch/v1" # Corrección: URL sin espacios
+        url = "https://www.googleapis.com/customsearch/v1"
         params = {'key': GOOGLE_API_KEY, 'cx': GOOGLE_CX, 'q': query_base, 'num': 5, 'lr': f'lang_{idioma}'}
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params, timeout=10) as response:
@@ -557,6 +606,7 @@ async def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) ->
             "freecodecamp": {"nombre": "freeCodeCamp", "url": f"https://www.freecodecamp.org/news/search/?query={tema.replace(' ', '%20')}", "niveles": ["Intermedio", "Avanzado"]},
             "khan": {"nombre": "Khan Academy", "url": f"https://www.khanacademy.org/search?page_search_query={tema.replace(' ', '%20')}", "niveles": ["Principiante"]},
         }
+
     for nombre_plataforma, datos in plataformas.items():
         if len(resultados) >= 4:
             break
@@ -570,6 +620,7 @@ async def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) ->
             "Intermedio": f"Curso práctico para profundizar en {tema} con ejercicios y proyectos.",
             "Avanzado": f"Contenido especializado para dominar {tema} a nivel profesional."
         }.get(nivel_actual, f"Recurso verificado para {tema}.")
+
         certificacion = None
         if "coursera" in nombre_plataforma or "edx" in nombre_plataforma or "freecodecamp" in nombre_plataforma:
             certificacion = Certificacion(
@@ -582,6 +633,7 @@ async def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) ->
                 reputacion_academica=0.85,
                 ultima_verificacion=datetime.now().isoformat()
             )
+
         resultados.append(RecursoEducativo(
             id=generar_id_unico(datos["url"]),
             titulo=titulo,
@@ -598,6 +650,7 @@ async def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) ->
             activo=True,
             metadatos={"fuente": "plataformas_conocidas"}
         ))
+
     return resultados
 
 async def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
@@ -618,11 +671,13 @@ async def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> L
         cursor.execute(query, params)
         filas = cursor.fetchall()
         conn.close()
+
         recursos: List[RecursoEducativo] = []
         for r in filas:
             nombre, url_base, descripcion, nivel_db, confianza, tipo_cert, validez_int, paises_json, reputacion = r
             url_completa = url_base.format(tema.replace(' ', '+'))
             nivel_calc = nivel_db if nivel in ("Cualquiera", "Todos") else nivel
+
             cert = None
             if tipo_cert and tipo_cert != "audit":
                 cert = Certificacion(
@@ -635,6 +690,7 @@ async def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> L
                     reputacion_academica=reputacion,
                     ultima_verificacion=datetime.now().isoformat()
                 )
+
             recursos.append(RecursoEducativo(
                 id=generar_id_unico(url_completa),
                 titulo=f"💎 {nombre} — {tema}",
@@ -651,6 +707,7 @@ async def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> L
                 activo=True,
                 metadatos={"fuente": "plataformas_ocultas", "confianza_db": confianza}
             ))
+
         return recursos
     except Exception as e:
         logger.error(f"Error al obtener plataformas ocultas: {e}")
@@ -674,11 +731,10 @@ async def buscar_recursos_multicapa(tema: str, idioma: str, nivel: str) -> List[
 
     resultados: List[RecursoEducativo] = []
     codigo_idioma = get_codigo_idioma(idioma)
-    
+
     # Barra de progreso
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
     status_text.text("Buscando en plataformas conocidas...")
     conocidos = await buscar_en_plataformas_conocidas(tema, codigo_idioma, nivel)
     resultados.extend(conocidos)
@@ -704,7 +760,6 @@ async def buscar_recursos_multicapa(tema: str, idioma: str, nivel: str) -> List[
 
     final = resultados[:10]
     search_cache[cache_key] = {'resultados': final, 'timestamp': datetime.now()}
-    
     progress_bar.progress(1.0)
     time.sleep(0.1) # Pequeña pausa para que se vea el 100%
     progress_bar.empty()
@@ -716,16 +771,19 @@ async def buscar_recursos_multicapa(tema: str, idioma: str, nivel: str) -> List[
 # PROCESAMIENTO EN SEGUNDO PLANO
 # ----------------------------
 def analizar_resultados_en_segundo_plano(resultados: List[RecursoEducativo]):
-    if not GROQ_AVAILABLE or not GROQ_API_KEY:
+    if not GROQ_AVAILABLE or not GROQ_API_KEY or not async_groq_client:
         return
+
     try:
         perfil = obtener_perfil_usuario()
         for recurso in resultados:
             if recurso.analisis_pendiente and not recurso.metadatos_analisis:
+                # Usar asyncio.run para ejecutar la función async en el hilo actual
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 analisis = loop.run_until_complete(analizar_calidad_curso(recurso, perfil))
                 loop.close()
+
                 if analisis:
                     calidad = float(analisis.get("calidad_educativa", recurso.confianza))
                     relevancia = float(analisis.get("relevancia_usuario", recurso.confianza))
@@ -779,7 +837,7 @@ def planificar_indexacion_recursos(temas: List[str], idiomas: List[str]):
     logger.info(f"🗂️ Indexación planificada: {len(temas)} temas, {len(idiomas)} idiomas (placeholder)")
 
 # ----------------------------
-# INTERFAZ DE USUARIO (UI)
+# INTERFAZ DE USUARIO (UI) - Mejorada
 # ----------------------------
 st.set_page_config(
     page_title="🎓 Buscador Profesional de Cursos",
@@ -859,16 +917,17 @@ idiomas_indexacion = ["es", "en", "pt"]
 planificar_indexacion_recursos(temas_populares, idiomas_indexacion)
 
 # ----------------------------
-# FUNCIONES DE AYUDA PARA LA UI
+# FUNCIONES DE AYUDA PARA LA UI - Mejoradas
 # ----------------------------
-def link_button(url: str, label: str = "➡️ Acceder al recurso") -> str:
+def link_button(url: str, label: str = "➡️ Acceder al curso") -> str:
+    # Botón HTML que abre el enlace en una nueva pestaña
     return f'''
-    <a href="{url}" target="_blank"
-       style="flex:1;min-width:200px;background:linear-gradient(to right,#6a11cb,#2575fc);
-             color:white;padding:10px 16px;text-decoration:none;border-radius:8px;
-             font-weight:bold;text-align:center;">
+    <button onclick="window.open('{url}', '_blank')" 
+            style="flex:1;min-width:200px;background:linear-gradient(to right,#6a11cb,#2575fc);
+                   color:white;padding:10px 16px;text-decoration:none;border-radius:8px;
+                   font-weight:bold;text-align:center;border:none;cursor:pointer;">
        {label}
-    </a>
+    </button>
     '''
 
 def badge_certificacion(cert: Optional[Certificacion]) -> str:
@@ -888,22 +947,22 @@ def clase_nivel(nivel: str) -> str:
     return {"Principiante": "nivel-principiante", "Intermedio": "nivel-intermedio", "Avanzado": "nivel-avanzado"}.get(nivel, "")
 
 # ----------------------------
-# FUNCIONES PARA MOSTRAR RESULTADOS
+# FUNCIONES PARA MOSTRAR RESULTADOS - Mejoradas
 # ----------------------------
 def mostrar_recurso_basico(recurso: RecursoEducativo, index: int, analisis_pendiente: bool = False):
     extra = "plataforma-oculta" if recurso.tipo == "oculta" else ""
     pending_class = "analisis-pendiente" if analisis_pendiente else ""
     cert_html = badge_certificacion(recurso.certificacion)
-    # SE ELIMINÓ EL PÁRRAFO DE DESCRIPCIÓN PARA LIMPIEZA VISUAL
+
     st.markdown(f"""
     <div class="resultado-card {clase_nivel(recurso.nivel)} {extra} {pending_class} fade-in"
          style="animation-delay: {index * 0.08}s;">
         <h3>🎯 {recurso.titulo}</h3>
         <p><strong>📚 Nivel:</strong> {recurso.nivel} | <strong>🌐 Plataforma:</strong> {recurso.plataforma}</p>
-        
+        <p>📝 {recurso.descripcion}</p>
         {cert_html}
         <div style="margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap;">
-            {link_button(recurso.url, "➡️ Acceder al recurso")}
+            {link_button(recurso.url, "➡️ Acceder al curso")}
         </div>
         <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee; font-size: 0.9rem; color: #666;">
             <p style="margin:4px 0;"><strong>🔎 Confianza:</strong> {recurso.confianza*100:.1f}% |
@@ -919,6 +978,7 @@ def mostrar_recurso_con_ia(recurso: RecursoEducativo, index: int):
     extra = "plataforma-oculta" if recurso.tipo == "oculta" else ""
     ia_class = "con-analisis-ia" if recurso.metadatos_analisis else ""
     cert_html = badge_certificacion(recurso.certificacion)
+
     analisis_ia = recurso.metadatos_analisis or {}
     calidad = int(100 * analisis_ia.get("calidad_ia", recurso.confianza))
     relevancia = int(100 * analisis_ia.get("relevancia_ia", recurso.confianza))
@@ -927,6 +987,7 @@ def mostrar_recurso_con_ia(recurso: RecursoEducativo, index: int):
     advertencias = analisis_ia.get("advertencias", [])[:2]
     razones_html = "".join(f"<li>{r}</li>" for r in razones) if razones else ""
     advertencias_html = "".join(f"<li>{a}</li>" for a in advertencias) if advertencias else ""
+
     ia_block = ""
     if recurso.metadatos_analisis:
         ia_block = f"""
@@ -938,17 +999,17 @@ def mostrar_recurso_con_ia(recurso: RecursoEducativo, index: int):
         {f'<div style="margin: 10px 0; padding: 10px; background: #e3f2fd; border-radius: 8px;"><strong>🔍 Razones de Calidad:</strong><ul style="margin: 8px 0 0 20px;">{razones_html}</ul></div>' if razones_html else ''}
         {f'<div style="margin: 10px 0; padding: 10px; background: #fff8e1; border-radius: 8px;"><strong>⚠️ Advertencias:</strong><ul style="margin: 8px 0 0 20px;">{advertencias_html}</ul></div>' if advertencias_html else ''}
         """
-    # SE ELIMINÓ EL PÁRRAFO DE DESCRIPCIÓN PARA LIMPIEZA VISUAL
+
     st.markdown(f"""
     <div class="resultado-card {clase_nivel(recurso.nivel)} {extra} {ia_class} fade-in"
          style="animation-delay: {index * 0.08}s;">
         <h3>🎯 {recurso.titulo}</h3>
         <p><strong>📚 Nivel:</strong> {recurso.nivel} | <strong>🌐 Plataforma:</strong> {recurso.plataforma}</p>
-        
+        <p>📝 {recurso.descripcion}</p>
         {cert_html}
         {ia_block}
         <div style="margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap;">
-            {link_button(recurso.url, "➡️ Acceder al recurso")}
+            {link_button(recurso.url, "➡️ Acceder al curso")}
         </div>
         <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee; font-size: 0.9rem; color: #666;">
             <p style="margin:4px 0;"><strong>🔎 Confianza:</strong> {recurso.confianza*100:.1f}% |
@@ -1016,17 +1077,18 @@ if buscar and tema.strip():
             st.exception(e)
 
 # ----------------------------
-# CHAT IA (opcional)
+# CHAT IA (opcional) - Adaptado para usar nuevo AsyncGroq
 # ----------------------------
 st.markdown("### 💬 Asistente educativo (opcional)")
+
 if "chat_msgs" not in st.session_state:
     st.session_state.chat_msgs = []
 
 def chatgroq(mensajes: List[Dict[str, str]]) -> str:
-    if not GROQ_AVAILABLE or not GROQ_API_KEY:
+    if not GROQ_AVAILABLE or not GROQ_API_KEY or not async_groq_client:
         return "🧠 IA no disponible. Usa el buscador superior para encontrar cursos ahora."
+
     try:
-        client = groq.Groq(api_key=GROQ_API_KEY)
         system_prompt = (
             "Eres un asistente educativo. Conversa con claridad. "
             "Si detectas intención de búsqueda, al final incluye SOLO un bloque JSON con este formato exacto:\n"
@@ -1034,12 +1096,18 @@ def chatgroq(mensajes: List[Dict[str, str]]) -> str:
             "No pongas comentarios ni texto dentro del JSON. El contenido conversacional va arriba; el JSON solo al final."
         )
         groq_msgs = [{"role": "system", "content": system_prompt}] + mensajes
-        resp = client.chat.completions.create(
+
+        # Ejecutar la llamada asíncrona dentro de un loop nuevo en este hilo
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        resp = loop.run_until_complete(async_groq_client.chat_completion(
             messages=groq_msgs,
             model=GROQ_MODEL,
             temperature=0.3,
             max_tokens=900,
-        )
+        ))
+        loop.close()
+
         return resp.choices[0].message.content
     except Exception as e:
         logger.error(f"Error en chat Groq: {e}")
@@ -1106,6 +1174,7 @@ if st.session_state.chat_msgs:
                     buscar_recursos_multicapa(cmd["tema"], cmd["idioma"], cmd["nivel"])
                 )
                 loop.close()
+
                 if resultados_cmd:
                     st.success(f"✅ {len(resultados_cmd)} recursos encontrados para “{cmd['tema']}”")
                     if GROQ_AVAILABLE and GROQ_API_KEY:
@@ -1160,6 +1229,7 @@ with st.sidebar:
 
     st.markdown("### 🤖 Estado del sistema")
     st.info(f"IA: {'✅ Disponible' if GROQ_AVAILABLE and GROQ_API_KEY else '⚠️ No disponible'}\nÚltima actualización: {datetime.now().strftime('%H:%M:%S')}")
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ----------------------------
