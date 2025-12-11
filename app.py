@@ -1,5 +1,5 @@
-# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión Final Reparada)
-# Correcciones: get_i18n restaurado, Main unificado, Groq JSON fix, Sesión DB fix.
+# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión Final Depurada v4.1)
+# Correcciones: Fix conflicto librerías IA, Limpieza de Logs Altair, Estructura Unificada.
 
 import streamlit as st
 import pandas as pd
@@ -23,6 +23,12 @@ import aiohttp
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
+
+# --- FILTRO DE RUIDO (NUEVO) ---
+# Silencia las advertencias de Altair/Narwhals que llenan los logs
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="altair")
+# -------------------------------
 
 # ============================================================
 # 0. PERFILADO LIGERO Y DECORADORES DE UTILIDAD
