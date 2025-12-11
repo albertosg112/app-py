@@ -1195,9 +1195,14 @@ def event_bridge():
     # Implementamos un puente simple: cuando el usuario hace click en Favorito,
     # le pedimos que confirme en un control de texto el ID del recurso y lo guardamos.
     st.markdown("### 🔗 Puente de eventos (Favoritos)")
-    fav_id = st.text_input("ID del recurso a guardar como favorito (pegar desde botón)")
-    fav_notas = st.text_input("Notas (opcional)")
-    if st.button("Guardar favorito manual", use_container_width=True):
+    
+    # SE AÑADE key="fav_manual_id"
+    fav_id = st.text_input("ID del recurso a guardar como favorito (pegar desde botón)", key="fav_manual_id")
+    # SE AÑADE key="fav_manual_notes"
+    fav_notas = st.text_input("Notas (opcional)", key="fav_manual_notes")
+    
+    # SE AÑADE key="btn_save_manual"
+    if st.button("Guardar favorito manual", use_container_width=True, key="btn_save_manual"):
         # Sin resultados actuales, no podemos mapear; así que lo guardamos con URL vacía.
         r = RecursoEducativo(
             id=fav_id or f"manual_{int(time.time())}",
@@ -1670,4 +1675,5 @@ if __name__ == "__main__":
     main_extended()
     # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
     # end_session() podría llamarse en teardown manual si se desea.
+
 
