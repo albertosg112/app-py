@@ -1,20 +1,5 @@
 # app.py — Consolidado Definitivo Ultra-Robust PRO (SG1 + Async + UI/Chat + Parches + Módulos Extra)
-# Objetivo: 1200+ líneas de código robusto y creativo, uniendo lo mejor de tus versiones, sin quitar funcionalidades.
-# Incluye:
-# - Búsqueda multicapa (Google API, plataformas conocidas, plataformas ocultas en DB)
-# - Caché expirable, deduplicación y orden por confianza
-# - Análisis IA con Groq en background (fallback seguro si no está disponible)
-# - Chat IA con limpieza de HTML/JSON visible
-# - UI moderna con badges, métricas, CSV export, favoritos y notas del usuario
-# - Base de datos con context manager, semilla restaurada y migraciones
-# - Panel de configuración avanzada, banderas de características, temas y accesibilidad
-# - Trazabilidad, auditoría, telemetría opt-out, perfilado liviano, y depuración
-# - Módulos creativos: marcadores, calificaciones, feedback del usuario, historial de sesiones
-# - Utilidades para limpieza, validación, normalización, test integrado básico
-# - Persistencia de estado en session_state y sincronización con la DB
-# - Extensiones (DDG opcional), import/export de búsquedas, modo offline con caché
-
-
+# Versión Corregida: Unificación de Main, Fix de Groq JSON y Fix de Sesión DB.
 
 import streamlit as st
 import pandas as pd
@@ -443,9 +428,15 @@ def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool
 def limpiar_html_visible(texto: str) -> str:
     if not texto:
         return ""
-    texto = re.sub(r'\{.*\}\s*$', '', texto, flags=re.DOTALL).strip()  # bloque JSON al final
-    texto = re.sub(r'<[^>]+>', '', texto).strip()  # etiquetas HTML en toda la cadena
-    return texto
+    # 1. Eliminar bloques de código markdown (ej: ```json ... ```)
+    texto = re.sub(r'```.*?```', '', texto, flags=re.DOTALL)
+    # 2. Eliminar bloques JSON explícitos al final o inicio
+    texto = re.sub(r'^\s*\{.*\}\s*$', '', texto, flags=re.DOTALL | re.MULTILINE)
+    # 3. Eliminar etiquetas HTML
+    texto = re.sub(r'<[^>]+>', '', texto)
+    # 4. Eliminar artefactos de objetos JSON sueltos al final de la cadena
+    texto = re.sub(r'\{.*\}\s*$', '', texto, flags=re.DOTALL)
+    return texto.strip()
 
 def ui_chat_mostrar(mensaje: str, rol: str):
     texto_limpio = limpiar_html_visible(mensaje)
@@ -457,62 +448,70 @@ def ui_chat_mostrar(mensaje: str, rol: str):
         st.markdown(f"👤 **Tú:** {texto_limpio}")
 
 # ============================================================
-# 7. INTEGRACIÓN GROQ (Análisis & Chat)
+# 7. INTEGRACIÓN GROQ (Análisis & Chat - CORREGIDO)
 # ============================================================
 def analizar_recurso_groq_sync(recurso: RecursoEducativo, perfil: Dict):
-    """Worker robusto para Groq con manejo de errores mejorado."""
+    """Worker robusto para Groq con manejo de errores mejorado y JSON format."""
     if not (GROQ_AVAILABLE and st.session_state.features.get("enable_groq_analysis", True)):
         recurso.metadatos_analisis = {
             "calidad_ia": recurso.confianza,
             "relevancia_ia": recurso.confianza,
-            "recomendacion_personalizada": "IA no disponible.",
+            "recomendacion_personalizada": "Análisis IA no disponible o deshabilitado.",
             "razones_calidad": [],
             "advertencias": ["Análisis IA deshabilitado o no disponible"]
         }
         return
+
     try:
         client = groq.Groq(api_key=GROQ_API_KEY)
         prompt = f"""
-        Evalúa este curso. Devuelve SOLO JSON válido.
+        Evalúa este curso y devuelve únicamente un objeto JSON válido, sin texto adicional.
         TÍTULO: {recurso.titulo}
         DESCRIPCIÓN: {recurso.descripcion}
         NIVEL: {recurso.nivel}
         CATEGORÍA: {recurso.categoria}
         PLATAFORMA: {recurso.plataforma}
 
-        JSON:
+        Formato de salida JSON esperado:
         {{
             "calidad_educativa": 0.85,
             "relevancia_usuario": 0.90,
             "razones_calidad": ["razon1","razon2"],
-            "recomendacion_personalizada": "Conclusión breve útil para el usuario",
+            "recomendacion_personalizada": "Conclusión breve y útil para el usuario.",
             "advertencias": []
         }}
         """
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model=GROQ_MODEL, temperature=0.3, max_tokens=600
+            model=GROQ_MODEL,
+            temperature=0.2, 
+            max_tokens=600,
+            response_format={"type": "json_object"}, # Fix para obligar JSON
         )
-        contenido = (resp.choices[0].message.content or "").strip()
-        json_match = re.search(r'\{.*\}', contenido, re.DOTALL)
-        data = safe_json_loads(json_match.group()) if json_match else {}
+
+        contenido = resp.choices[0].message.content or "{}"
+        data = safe_json_loads(contenido)
+
         recurso.metadatos_analisis = {
             "calidad_ia": float(data.get("calidad_educativa", recurso.confianza)),
             "relevancia_ia": float(data.get("relevancia_usuario", recurso.confianza)),
-            "recomendacion_personalizada": data.get("recomendacion_personalizada", "Curso recomendado."),
+            "recomendacion_personalizada": data.get("recomendacion_personalizada", "Análisis no concluyente."),
             "razones_calidad": data.get("razones_calidad", []),
             "advertencias": data.get("advertencias", [])
         }
+
+        # Ajuste de confianza basado en la IA
         ia_prom = (recurso.metadatos_analisis["calidad_ia"] + recurso.metadatos_analisis["relevancia_ia"]) / 2.0
-        recurso.confianza = min(max(recurso.confianza, ia_prom), 0.95)
+        recurso.confianza = min(max(recurso.confianza * 0.7 + ia_prom * 0.3, 0.5), 0.98) 
+
     except Exception as e:
-        logger.error(f"Error Groq Worker: {e}")
+        logger.error(f"Error en Groq Worker para '{recurso.titulo}': {e}")
         recurso.metadatos_analisis = {
-            "calidad_ia": recurso.confianza,
-            "relevancia_ia": recurso.confianza,
-            "recomendacion_personalizada": "IA no disponible temporalmente.",
+            "calidad_ia": 0.0,
+            "relevancia_ia": 0.0,
+            "recomendacion_personalizada": "No se pudo completar el análisis IA.",
             "razones_calidad": [],
-            "advertencias": [str(e)]
+            "advertencias": [f"Error de API: {str(e)}"]
         }
 
 def ejecutar_analisis_background(resultados: List[RecursoEducativo]):
@@ -1174,49 +1173,7 @@ def render_footer():
     """, unsafe_allow_html=True)
 
 # ============================================================
-# 14. MAIN APP
-# ============================================================
-def main():
-    render_header()
-    iniciar_tareas_background()
-    tema, nivel, idioma, buscar = render_search_form()
-
-    resultados: List[RecursoEducativo] = []
-    if buscar:
-        if not (tema or "").strip():
-            st.warning("Por favor ingresa un tema.")
-        else:
-            with st.spinner("🔍 Buscando en múltiples fuentes..."):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                resultados = loop.run_until_complete(buscar_recursos_multicapa(tema.strip(), idioma, nivel))
-                loop.close()
-            render_results(resultados)
-
-    # Paneles avanzados
-    st.markdown("### 🧭 Paneles avanzados")
-    colA, colB, colC = st.columns(3)
-    with colA:
-        panel_configuracion_avanzada()
-    with colB:
-        panel_cache_viewer()
-    with colC:
-        panel_favoritos_ui()
-
-    # Feedback y export/import
-    st.markdown("---")
-    panel_feedback_ui(resultados)
-    panel_export_import_ui(resultados)
-
-    # Sidebar
-    sidebar_chat()
-    sidebar_status()
-
-    # Footer
-    render_footer()
-
-# ============================================================
-# 15. EVENT-BRIDGE PARA FAVORITOS (PostMessage desde botón HTML)
+# 14. EVENT-BRIDGE PARA FAVORITOS (PostMessage desde botón HTML)
 # ============================================================
 def event_bridge():
     # En Streamlit no hay listener directo para window.postMessage.
@@ -1250,113 +1207,10 @@ def event_bridge():
             st.error("No se pudo guardar el favorito")
 
 # ============================================================
-# 16. PRUEBAS BÁSICAS (Sanity Checks)
-# ============================================================
-def run_basic_tests():
-    st.markdown("### 🧪 Pruebas básicas")
-    try:
-        # Test de utilidades
-        assert determinar_nivel("Curso avanzado", "Cualquiera") == "Avanzado"
-        assert determinar_nivel("Curso básico", "Cualquiera") == "Principiante"
-        assert determinar_nivel("Curso intermedio", "Cualquiera") == "Intermedio"
-        assert determinar_categoria("Python para ciencia de datos") == "Data Science" or determinar_categoria("Python para ciencia de datos") == "Programación"
-        # Test DB
-        with get_db_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM plataformas_ocultas")
-            count = c.fetchone()[0]
-            assert count >= 5
-        st.success("Pruebas básicas OK")
-    except AssertionError:
-        st.error("Falló una aserción en pruebas básicas")
-    except Exception as e:
-        st.error(f"Error en pruebas básicas: {e}")
-
-# ============================================================
-# 17. SECCIÓN AYUDA & ATAJOS
-# ============================================================
-def render_help():
-    st.markdown("### ❓ Ayuda y atajos")
-    st.markdown("- Escribe un tema y pulsa 'Buscar Cursos'.")
-    st.markdown("- Activa/desactiva características en Configuración avanzada.")
-    st.markdown("- Añade favoritos y exporta resultados a CSV.")
-    st.markdown("- Usa el chat IA para consejos rápidos (si Groq está disponible).")
-    st.markdown("- Si la IA muestra HTML/JSON, se limpiará automáticamente en la UI (parche aplicado).")
-    st.markdown("- Atajos: [Shift+Enter] para enviar en chat, [Alt+R] para refrescar (según navegador).")
-
-# ============================================================
-# 18. TELEMETRÍA OPT-OUT (solo bandera persistente)
-# ============================================================
-def set_telemetry_opt_out(value: bool):
-    try:
-        with get_db_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO configuracion (clave, valor) VALUES (?, ?)", ("telemetry_opt_out", "1" if value else "0"))
-            conn.commit()
-        st.success("Preferencia de telemetría actualizada")
-    except Exception as e:
-        logger.error(f"Error en telemetría opt-out: {e}")
-        st.error("No se pudo actualizar la preferencia")
-
-def render_telemetry():
-    st.markdown("### 🔒 Privacidad y Telemetría")
-    try:
-        with get_db_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT valor FROM configuracion WHERE clave = 'telemetry_opt_out'")
-            row = c.fetchone()
-            opt_out = (row and row[0] == "1")
-    except Exception:
-        opt_out = False
-    new_val = st.checkbox("Desactivar telemetría anónima", value=opt_out)
-    if new_val != opt_out:
-        set_telemetry_opt_out(new_val)
-
-# ============================================================
-# 19. EJECUCIÓN
-# ============================================================
-if __name__ == "__main__":
-    main()
-    event_bridge()
-    run_basic_tests()
-    render_help()
-    render_telemetry()
-        # ============================================================
-    # Finalización del ciclo de ejecución
-    # ============================================================
-
-    try:
-        # Registrar fin de sesión si corresponde
-        if "session_id" in st.session_state:
-            end_session()
-            logger.info(f"🛑 Sesión finalizada: {st.session_state.session_id}")
-        else:
-            logger.warning("⚠️ No se encontró session_id para cerrar sesión")
-
-        # Confirmar estado final
-        logger.info("✅ Aplicación ejecutada correctamente hasta el final")
-        st.toast("✅ Aplicación ejecutada con éxito", icon="🎉")
-
-    except Exception as e:
-        logger.error(f"❌ Error en cierre de ejecución: {e}")
-        st.error("Ocurrió un error al finalizar la aplicación. Revisa los logs para más detalles.")
-
-    finally:
-        # Limpieza opcional de recursos
-        if "background_started" in st.session_state:
-            logger.info("🧹 Finalizando workers en segundo plano")
-            for _ in range(MAX_BACKGROUND_TASKS):
-                background_tasks.put(None)  # Señal de cierre
-
-# ============================================================
 # 20. DUCKDUCKGO FALLBACK (OPCIONAL)
 # ============================================================
 @async_profile
 async def buscar_en_duckduckgo(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    """
-    Búsqueda simple en DuckDuckGo como fallback opcional.
-    Nota: DDG no tiene API oficial libre para resultados detallados; usamos HTML básico si se habilita.
-    """
     if not st.session_state.features.get("enable_ddg_fallback", False):
         return []
     try:
@@ -1367,7 +1221,6 @@ async def buscar_en_duckduckgo(tema: str, idioma: str, nivel: str) -> List[Recur
                 if resp.status != 200:
                     return []
                 text = await resp.text()
-                # Parsing muy básico para extraer enlaces (sin BeautifulSoup para mantenerlo opcional)
                 links = re.findall(r'href="(https?://[^"]+)"', text)
                 resultados: List[RecursoEducativo] = []
                 for link in links[:5]:
@@ -1396,7 +1249,6 @@ async def buscar_en_duckduckgo(tema: str, idioma: str, nivel: str) -> List[Recur
         logger.error(f"DDG fallback error: {e}")
         return []
 
-# Extender la búsqueda multicapa para usar DDG si Google está deshabilitado o vacío
 @async_profile
 async def buscar_recursos_multicapa_ext(tema: str, idioma_seleccion_ui: str, nivel: str) -> List[RecursoEducativo]:
     base = await buscar_recursos_multicapa(tema, idioma_seleccion_ui, nivel)
@@ -1427,7 +1279,6 @@ def log_click_event(tema: str, url: str, plataforma: str):
     try:
         with get_db_connection(DB_PATH) as conn:
             c = conn.cursor()
-            # Para simplicidad, incrementamos conteo en la última fila del mismo tema
             c.execute("""
                 UPDATE analiticas_busquedas
                 SET veces_clickeado = veces_clickeado + 1
@@ -1443,56 +1294,12 @@ def registrar_muestreo_estadistico(resultados: List[RecursoEducativo], tema: str
     plataformas = ", ".join(sorted(set(r.plataforma for r in resultados)))
     log_search_event(tema, idioma, nivel, plataformas, len(resultados))
 
-# Botón de registrar click manual (no captura onclick del enlace por limitaciones)
 def boton_registrar_click(r: RecursoEducativo, tema: str):
     col1, col2 = st.columns([4, 1])
     with col2:
         if st.button("🔖 Registrar click", key=f"reg_click_{r.id}"):
             log_click_event(tema, r.url, r.plataforma)
             st.success("Click registrado")
-
-# ============================================================
-# 22. ACCESIBILIDAD E I18N SIMPLE
-# ============================================================
-I18N = {
-    "es": {
-        "search_button": "🚀 Buscar Cursos",
-        "enter_topic": "¿Qué quieres aprender?",
-        "level": "Nivel",
-        "language": "Idioma",
-        "results_found": "Se encontraron {n} recursos verificados.",
-        "no_results": "No se encontraron resultados. Intenta con términos más generales.",
-        "favorites": "Favoritos",
-        "feedback": "Feedback",
-        "export_import": "Exportar / Importar",
-    },
-    "en": {
-        "search_button": "🚀 Search Courses",
-        "enter_topic": "What do you want to learn?",
-        "level": "Level",
-        "language": "Language",
-        "results_found": "{n} verified resources found.",
-        "no_results": "No results found. Try broader terms.",
-        "favorites": "Favorites",
-        "feedback": "Feedback",
-        "export_import": "Export / Import",
-    },
-    "pt": {
-        "search_button": "🚀 Buscar Cursos",
-        "enter_topic": "O que você quer aprender?",
-        "level": "Nível",
-        "language": "Idioma",
-        "results_found": "{n} recursos verificados encontrados.",
-        "no_results": "Nenhum resultado encontrado. Tente termos mais gerais.",
-        "favorites": "Favoritos",
-        "feedback": "Feedback",
-        "export_import": "Exportar / Importar",
-    }
-}
-
-def get_i18n(lang_ui: str) -> Dict[str, str]:
-    code = get_codigo_idioma(lang_ui)
-    return I18N.get(code, I18N["es"])
 
 # ============================================================
 # 23. ADMIN DASHBOARD
@@ -1502,7 +1309,6 @@ def admin_dashboard():
     try:
         with get_db_connection(DB_PATH) as conn:
             c = conn.cursor()
-            # Totales
             c.execute("SELECT COUNT(*) FROM analiticas_busquedas")
             t_busquedas = c.fetchone()[0]
             c.execute("SELECT COUNT(*) FROM plataformas_ocultas WHERE activa = 1")
@@ -1557,7 +1363,7 @@ def log_viewer(max_lines: int = 200):
         st.error(f"Error leyendo logs: {e}")
 
 # ============================================================
-# 25. SESIONES DE USUARIO
+# 25. SESIONES DE USUARIO (CORREGIDO BLINDADO)
 # ============================================================
 def ensure_session():
     if "session_id" not in st.session_state:
@@ -1565,11 +1371,22 @@ def ensure_session():
         try:
             with get_db_connection(DB_PATH) as conn:
                 c = conn.cursor()
+                # PARCHE: Crear tabla si no existe antes de insertar
+                c.execute('''
+                CREATE TABLE IF NOT EXISTS sesiones (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    device TEXT,
+                    prefs_json TEXT
+                )
+                ''')
                 c.execute("INSERT INTO sesiones (session_id, started_at, device, prefs_json) VALUES (?, ?, ?, ?)",
-                          (st.session_state.session_id, datetime.now().isoformat(), "web", safe_json_dumps(st.session_state.features)))
+                          (st.session_state.session_id, datetime.now().isoformat(), "web", safe_json_dumps(st.session_state.get('features', {}))))
                 conn.commit()
         except Exception as e:
-            logger.error(f"Error creando sesión: {e}")
+            logger.error(f"⚠️ Error no crítico creando sesión: {e}")
 
 def end_session():
     try:
@@ -1605,7 +1422,6 @@ def notas_usuario_widget(r: RecursoEducativo):
         else:
             st.error("No se pudo guardar la nota.")
 
-# Integración opcional en render de resultados (no reemplaza la UI principal)
 def render_notas_para_resultados(resultados: List[RecursoEducativo]):
     st.markdown("### 🗂️ Notas rápidas")
     for r in resultados[:3]:
@@ -1636,66 +1452,163 @@ def reportes_rapidos():
         st.error(f"Error reporte: {e}")
 
 # ============================================================
-# 29. EXTENDER MAIN CON NUEVAS SECCIONES
+# 16. PRUEBAS BÁSICAS (Sanity Checks)
 # ============================================================
-def main_extended():
+def run_basic_tests():
+    with st.expander("🧪 Pruebas básicas (Diagnóstico)"):
+        try:
+            # Test de utilidades
+            assert determinar_nivel("Curso avanzado", "Cualquiera") == "Avanzado"
+            assert determinar_nivel("Curso básico", "Cualquiera") == "Principiante"
+            assert determinar_nivel("Curso intermedio", "Cualquiera") == "Intermedio"
+            assert determinar_categoria("Python para ciencia de datos") == "Data Science" or determinar_categoria("Python para ciencia de datos") == "Programación"
+            # Test DB
+            with get_db_connection(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) FROM plataformas_ocultas")
+                count = c.fetchone()[0]
+                assert count >= 5
+            st.success("Pruebas básicas OK")
+        except AssertionError:
+            st.error("Falló una aserción en pruebas básicas")
+        except Exception as e:
+            st.error(f"Error en pruebas básicas: {e}")
+
+# ============================================================
+# 17. SECCIÓN AYUDA & ATAJOS
+# ============================================================
+def render_help():
+    with st.expander("❓ Ayuda"):
+        st.markdown("- Escribe un tema y pulsa 'Buscar Cursos'.")
+        st.markdown("- Activa/desactiva características en Configuración avanzada.")
+        st.markdown("- Añade favoritos y exporta resultados a CSV.")
+        st.markdown("- Usa el chat IA para consejos rápidos (si Groq está disponible).")
+        st.markdown("- Si la IA muestra HTML/JSON, se limpiará automáticamente en la UI (parche aplicado).")
+        st.markdown("- Atajos: [Shift+Enter] para enviar en chat, [Alt+R] para refrescar (según navegador).")
+
+# ============================================================
+# 18. TELEMETRÍA OPT-OUT (solo bandera persistente)
+# ============================================================
+def set_telemetry_opt_out(value: bool):
+    try:
+        with get_db_connection(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO configuracion (clave, valor) VALUES (?, ?)", ("telemetry_opt_out", "1" if value else "0"))
+            conn.commit()
+        st.success("Preferencia de telemetría actualizada")
+    except Exception as e:
+        logger.error(f"Error en telemetría opt-out: {e}")
+        st.error("No se pudo actualizar la preferencia")
+
+def render_telemetry():
+    with st.expander("🔒 Privacidad y Telemetría"):
+        try:
+            with get_db_connection(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT valor FROM configuracion WHERE clave = 'telemetry_opt_out'")
+                row = c.fetchone()
+                opt_out = (row and row[0] == "1")
+        except Exception:
+            opt_out = False
+        new_val = st.checkbox("Desactivar telemetría anónima", value=opt_out)
+        if new_val != opt_out:
+            set_telemetry_opt_out(new_val)
+
+# ============================================================
+# 29. MAIN UNIFICADO (REEMPLAZA MAIN_APP Y MAIN_EXTENDED)
+# ============================================================
+def main():
+    """
+    Función principal unificada que renderiza la aplicación completa.
+    """
     ensure_session()
+    init_feature_flags()
+    iniciar_tareas_background()
+    
     # Header y búsqueda
     render_header()
-    iniciar_tareas_background()
-    tema, nivel, idioma, buscar = render_search_form()
 
-    resultados: List[RecursoEducativo] = []
-    if buscar:
+    # Formulario de búsqueda
+    i18n = get_i18n(st.session_state.get('lang_ui', 'Español (es)'))
+    tema = st.text_input(i18n["enter_topic"], placeholder="Ej: Python, IA, Finanzas...", key="search_topic_input")
+    col_form1, col_form2 = st.columns(2)
+    nivel = col_form1.selectbox(i18n["level"], ["Cualquiera", "Principiante", "Intermedio", "Avanzado"], key="search_level_select")
+    idioma = col_form2.selectbox(i18n["language"], ["Español (es)", "Inglés (en)", "Portugués (pt)"], key="search_lang_select")
+    st.session_state['lang_ui'] = idioma # Guardar selección
+
+    # --- Lógica de Búsqueda ---
+    if st.button(i18n["search_button"], type="primary", use_container_width=True):
         if not (tema or "").strip():
-            st.warning("Por favor ingresa un tema.")
+            st.warning("Por favor ingresa un tema para buscar.")
         else:
             with st.spinner("🔍 Buscando en múltiples fuentes..."):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                resultados = loop.run_until_complete(buscar_recursos_multicapa_ext(tema.strip(), idioma, nivel))
-                loop.close()
-            render_results(resultados)
-            registrar_muestreo_estadistico(resultados, tema.strip(), idioma, nivel)
-            render_notas_para_resultados(resultados)
+                # FIX ASYNCIO PARA STREAMLIT CLOUD
+                try:
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    resultados = loop.run_until_complete(buscar_recursos_multicapa_ext(tema.strip(), idioma, nivel))
+                    st.session_state.resultados = resultados
+                    
+                    if resultados:
+                        registrar_muestreo_estadistico(resultados, tema.strip(), idioma, nivel)
+                except Exception as e:
+                    logger.error(f"Error en búsqueda asíncrona: {e}")
+                    st.error(f"Ocurrió un error durante la búsqueda: {e}")
+                    st.session_state.resultados = []
+            st.rerun()
 
-    # Paneles avanzados
-    st.markdown("### 🧭 Paneles avanzados")
-    colA, colB, colC = st.columns(3)
+    # --- Renderizado de Contenido Dinámico ---
+    current_results = st.session_state.get('resultados', [])
+    if current_results:
+        st.success(i18n["results_found"].format(n=len(current_results)))
+        if GROQ_AVAILABLE and st.session_state.features.get("enable_groq_analysis", True):
+             planificar_analisis_ia(current_results)
+             time.sleep(0.4)
+
+        for i, r in enumerate(current_results):
+            mostrar_recurso(r, i)
+
+    elif 'resultados' in st.session_state:
+        st.warning(i18n["no_results"])
+
+    # --- Paneles Avanzados ---
+    st.markdown("---")
+    st.markdown("### 🧭 Paneles Avanzados y de Diagnóstico")
+    colA, colB = st.columns(2)
     with colA:
         panel_configuracion_avanzada()
-    with colB:
-        panel_cache_viewer()
-    with colC:
         panel_favoritos_ui()
+        panel_feedback_ui(current_results)
+        panel_export_import_ui(current_results)
+        reportes_rapidos()
 
-    # Feedback y export/import
+    with colB:
+        admin_dashboard()
+        log_viewer()
+        panel_cache_viewer()
+
+    # --- Ayuda y Otros ---
     st.markdown("---")
-    panel_feedback_ui(resultados)
-    panel_export_import_ui(resultados)
-
-    # Admin y diagnósticos
-    st.markdown("---")
-    admin_dashboard()
-    reportes_rapidos()
-    log_viewer()
-
-    # Ayuda y atajos
+    render_help()
     keyboard_tips()
+    render_telemetry()
+    if st.session_state.features.get("enable_debug_mode", False):
+        run_basic_tests()
 
-    # Sidebar
+    # --- Componentes Persistentes ---
     sidebar_chat()
     sidebar_status()
-
-    # Footer y cierre de sesión (cuando el usuario recarga o sale)
     render_footer()
 
 # ============================================================
-# 30. ARRANQUE
+# 30. PUNTO DE ENTRADA ÚNICO
 # ============================================================
 if __name__ == "__main__":
-    # Usar la versión extendida del main con más paneles
-    main_extended()
-    # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
-    # end_session() podría llamarse en teardown manual si se desea.
-
+    try:
+        main()
+    except Exception as e:
+        st.error(f"Error crítico en la aplicación: {e}")
