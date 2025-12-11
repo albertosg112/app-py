@@ -1184,18 +1184,10 @@ def main_app():
     render_header()
 
     # --- Formulario de búsqueda ---
-    # Se asignan claves únicas explícitas para máxima robustez.
-    tema = st.text_input(
-        "¿Qué quieres aprender?", 
-        placeholder="Ej: Python, Machine Learning, Diseño UX...", 
-        key="search_topic_input" # Clave única
-    )
-    
+    tema = st.text_input("¿Qué quieres aprender?", placeholder="Ej: Python...", key="search_topic_input")
     col_form1, col_form2 = st.columns(2)
-    with col_form1:
-        nivel = st.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"], key="search_level_select") # Clave única
-    with col_form2:
-        idioma = st.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"], key="search_lang_select") # Clave única
+    nivel = col_form1.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"], key="search_level_select")
+    idioma = col_form2.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"], key="search_lang_select")
 
     # --- Lógica de Búsqueda y Estado ---
     if st.button("🚀 Buscar Cursos", type="primary", use_container_width=True):
@@ -1203,23 +1195,16 @@ def main_app():
             st.warning("Por favor ingresa un tema.")
         else:
             with st.spinner("🔍 Buscando en múltiples fuentes..."):
-                # Ejecutar la búsqueda y guardar los resultados en el estado de la sesión
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 st.session_state.resultados = loop.run_until_complete(buscar_recursos_multicapa_ext(tema.strip(), idioma, nivel))
                 loop.close()
-            
-            # Registrar el evento de búsqueda
             if 'resultados' in st.session_state and st.session_state.resultados:
                  registrar_muestreo_estadistico(st.session_state.resultados, tema.strip(), idioma, nivel)
-            
-            # Forzar un rerun para que la UI se actualice inmediatamente con los resultados
             st.rerun()
 
     # --- Renderizado de Contenido Dinámico ---
-    # Usamos st.session_state.get para evitar errores si la clave aún no existe
     current_results = st.session_state.get('resultados', [])
-    
     if current_results:
         render_results(current_results)
         render_notas_para_resultados(current_results)
@@ -1239,13 +1224,10 @@ def main_app():
 
     # --- Secciones de Ayuda y Otros ---
     st.markdown("---")
-    col_help, col_telemetry = st.columns(2)
-    with col_help:
-        render_help()
-        keyboard_tips()
-    with col_telemetry:
-        render_telemetry()
-        run_basic_tests()
+    render_help()
+    keyboard_tips()
+    render_telemetry()
+    run_basic_tests()
 
     # --- Componentes Persistentes (Sidebar y Footer) ---
     sidebar_chat()
@@ -1256,17 +1238,7 @@ def main_app():
 # 15. PUNTO DE ENTRADA ÚNICO Y FINAL DEL SCRIPT
 # ============================================================
 if __name__ == "__main__":
-    # Llamamos a la función principal que organiza y ejecuta toda la aplicación.
-    # Esto asegura que el código se ejecute una sola vez por cada ciclo de
-    # recarga de Streamlit, evitando la creación de elementos duplicados.
     main_app()
-
-    # NOTA: Todas las demás funciones como event_bridge, run_basic_tests, etc.,
-    # ya son llamadas desde dentro de main_app(), por lo que no es necesario
-    # llamarlas de nuevo aquí. La lógica de finalización de sesión y limpieza
-    # de workers se maneja mejor dentro del ciclo de vida de la app o al reiniciar
-    # el servidor, por lo que se omite del final del script para evitar cierres prematuros.
-
 # ============================================================
 # 16. PRUEBAS BÁSICAS (Sanity Checks)
 # ============================================================
@@ -1716,6 +1688,7 @@ if __name__ == "__main__":
     main_extended()
     # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
     # end_session() podría llamarse en teardown manual si se desea.
+
 
 
 
