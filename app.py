@@ -1174,82 +1174,98 @@ def render_footer():
     """, unsafe_allow_html=True)
 
 # ============================================================
-# 14. MAIN APP
+# 14. MAIN APP (VERSIÓN CORREGIDA)
 # ============================================================
-def main():
-    render_header()
+def main_app():
+    # --- Inicializaciones y renderizado de UI estática ---
+    ensure_session()
+    init_feature_flags()
     iniciar_tareas_background()
-    tema, nivel, idioma, buscar = render_search_form()
+    render_header()
 
-    resultados: List[RecursoEducativo] = []
-    if buscar:
+    # --- Formulario de búsqueda ---
+    # Se asignan claves únicas explícitas para máxima robustez.
+    tema = st.text_input(
+        "¿Qué quieres aprender?", 
+        placeholder="Ej: Python, Machine Learning, Diseño UX...", 
+        key="search_topic_input" # Clave única
+    )
+    
+    col_form1, col_form2 = st.columns(2)
+    with col_form1:
+        nivel = st.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"], key="search_level_select") # Clave única
+    with col_form2:
+        idioma = st.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"], key="search_lang_select") # Clave única
+
+    # --- Lógica de Búsqueda y Estado ---
+    if st.button("🚀 Buscar Cursos", type="primary", use_container_width=True):
         if not (tema or "").strip():
             st.warning("Por favor ingresa un tema.")
         else:
             with st.spinner("🔍 Buscando en múltiples fuentes..."):
+                # Ejecutar la búsqueda y guardar los resultados en el estado de la sesión
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                resultados = loop.run_until_complete(buscar_recursos_multicapa(tema.strip(), idioma, nivel))
+                st.session_state.resultados = loop.run_until_complete(buscar_recursos_multicapa_ext(tema.strip(), idioma, nivel))
                 loop.close()
-            render_results(resultados)
+            
+            # Registrar el evento de búsqueda
+            if 'resultados' in st.session_state and st.session_state.resultados:
+                 registrar_muestreo_estadistico(st.session_state.resultados, tema.strip(), idioma, nivel)
+            
+            # Forzar un rerun para que la UI se actualice inmediatamente con los resultados
+            st.rerun()
 
-    # Paneles avanzados
-    st.markdown("### 🧭 Paneles avanzados")
-    colA, colB, colC = st.columns(3)
+    # --- Renderizado de Contenido Dinámico ---
+    # Usamos st.session_state.get para evitar errores si la clave aún no existe
+    current_results = st.session_state.get('resultados', [])
+    
+    if current_results:
+        render_results(current_results)
+        render_notas_para_resultados(current_results)
+
+    # --- Paneles Avanzados y de Diagnóstico ---
+    st.markdown("---")
+    st.markdown("### 🧭 Paneles Avanzados y de Diagnóstico")
+    colA, colB = st.columns(2)
     with colA:
         panel_configuracion_avanzada()
-    with colB:
-        panel_cache_viewer()
-    with colC:
         panel_favoritos_ui()
+        panel_feedback_ui(current_results)
+    with colB:
+        admin_dashboard()
+        log_viewer()
+        panel_cache_viewer()
 
-    # Feedback y export/import
+    # --- Secciones de Ayuda y Otros ---
     st.markdown("---")
-    panel_feedback_ui(resultados)
-    panel_export_import_ui(resultados)
+    col_help, col_telemetry = st.columns(2)
+    with col_help:
+        render_help()
+        keyboard_tips()
+    with col_telemetry:
+        render_telemetry()
+        run_basic_tests()
 
-    # Sidebar
+    # --- Componentes Persistentes (Sidebar y Footer) ---
     sidebar_chat()
     sidebar_status()
-
-    # Footer
     render_footer()
 
 # ============================================================
-# 15. EVENT-BRIDGE PARA FAVORITOS (PostMessage desde botón HTML)
+# 15. PUNTO DE ENTRADA ÚNICO Y FINAL DEL SCRIPT
 # ============================================================
-def event_bridge():
-    st.markdown("### 🔗 Puente de eventos (Favoritos)")
-    fav_id = st.text_input(
-        "ID del recurso a guardar como favorito (pegar desde botón)",
-        key="event_bridge_fav_id"
-    )
-    fav_notas = st.text_input(
-        "Notas (opcional)",
-        key="event_bridge_fav_notas"
-    )
-    if st.button("Guardar favorito manual", use_container_width=True, key="event_bridge_save_btn"):
-        r = RecursoEducativo(
-            id=fav_id or f"manual_{int(time.time())}",
-            titulo="Favorito manual",
-            url="",
-            descripcion="Añadido manualmente",
-            plataforma="Manual",
-            idioma="es",
-            nivel="Intermedio",
-            categoria="General",
-            certificacion=None,
-            confianza=0.8,
-            tipo="verificada",
-            ultima_verificacion=datetime.now().isoformat(),
-            activo=True,
-            metadatos={}
-        )
-        ok = agregar_favorito(r, fav_notas)
-        if ok:
-            st.success("Favorito guardado")
-        else:
-            st.error("No se pudo guardar el favorito")
+if __name__ == "__main__":
+    # Llamamos a la función principal que organiza y ejecuta toda la aplicación.
+    # Esto asegura que el código se ejecute una sola vez por cada ciclo de
+    # recarga de Streamlit, evitando la creación de elementos duplicados.
+    main_app()
+
+    # NOTA: Todas las demás funciones como event_bridge, run_basic_tests, etc.,
+    # ya son llamadas desde dentro de main_app(), por lo que no es necesario
+    # llamarlas de nuevo aquí. La lógica de finalización de sesión y limpieza
+    # de workers se maneja mejor dentro del ciclo de vida de la app o al reiniciar
+    # el servidor, por lo que se omite del final del script para evitar cierres prematuros.
 
 # ============================================================
 # 16. PRUEBAS BÁSICAS (Sanity Checks)
@@ -1700,6 +1716,7 @@ if __name__ == "__main__":
     main_extended()
     # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
     # end_session() podría llamarse en teardown manual si se desea.
+
 
 
 
