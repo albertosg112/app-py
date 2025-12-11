@@ -90,7 +90,7 @@ GOOGLE_API_KEY, GOOGLE_CX, GROQ_API_KEY = obtener_credenciales_seguras()
 DUCKDUCKGO_ENABLED = (os.getenv("DUCKDUCKGO_ENABLED", "false").lower() == "true")
 MAX_BACKGROUND_TASKS = 2
 CACHE_EXPIRATION = timedelta(hours=12)
-GROQ_MODEL = "llama-3.1-70b-versatile"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 def validate_api_key(key: str, key_type: str) -> bool:
     if not key or len(key) < 10:
@@ -1698,4 +1698,5 @@ if __name__ == "__main__":
     main_extended()
     # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
     # end_session() podría llamarse en teardown manual si se desea.
+
 
