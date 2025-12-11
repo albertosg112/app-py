@@ -21,13 +21,13 @@ import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 
-# --- INTEGRACIÓN: MÓDULO EXTERNO ---
+# --- CORRECCIÓN 1: IMPORTACIÓN DEL MÓDULO EXTERNO ---
 try:
     import ia_module
 except ImportError:
-    # Fallback silencioso para no romper la app si el archivo no está
     ia_module = None
-    logging.warning("⚠️ ia_module.py no encontrado. La funcionalidad IA estará limitada.")
+    # No mostramos error invasivo, solo log
+    logging.warning("⚠️ ia_module.py no encontrado. Funcionalidades de IA limitadas.")
 
 # ============================================================
 # 0. PERFILADO LIGERO Y DECORADORES DE UTILIDAD
@@ -80,14 +80,22 @@ GOOGLE_API_KEY, GOOGLE_CX, GROQ_API_KEY = obtener_credenciales_seguras()
 DUCKDUCKGO_ENABLED = (os.getenv("DUCKDUCKGO_ENABLED", "false").lower() == "true")
 MAX_BACKGROUND_TASKS = 2
 CACHE_EXPIRATION = timedelta(hours=12)
+GROQ_MODEL = "llama-3.3-70b-versatile" # Mantenemos referencia local por si acaso
 
-# Configuración de ia_module con credenciales obtenidas aquí
+# --- CORRECCIÓN 2: SINCRONIZACIÓN DE CREDENCIALES CON MÓDULO IA ---
+GROQ_AVAILABLE = False
 if ia_module and GROQ_API_KEY:
-    # Inyectamos la clave obtenida (por si vino de st.secrets y no de os.environ)
+    # Inyectamos la clave al módulo externo
     ia_module.GROQ_API_KEY = GROQ_API_KEY
-    # Re-validamos disponibilidad en el módulo
+    # Verificamos si el módulo la acepta
     if len(GROQ_API_KEY) >= 10:
         ia_module.GROQ_AVAILABLE = True
+        GROQ_AVAILABLE = True
+        logger.info("✅ Groq API disponible y validada (vía ia_module)")
+    else:
+        logger.warning("⚠️ Groq API Key detectada pero parece inválida")
+else:
+    logger.warning("⚠️ Groq API Key ausente o ia_module no cargado")
 
 def validate_api_key(key: str, key_type: str) -> bool:
     if not key or len(key) < 10:
@@ -95,14 +103,6 @@ def validate_api_key(key: str, key_type: str) -> bool:
     if key_type == "google" and not key.startswith(("AIza", "AIz")):
         return False
     return True
-
-# Sincronizamos la disponibilidad local con la del módulo
-GROQ_AVAILABLE = False
-if ia_module and ia_module.GROQ_AVAILABLE:
-    GROQ_AVAILABLE = True
-    logger.info("✅ Groq API disponible y validada (vía ia_module)")
-else:
-    logger.warning("⚠️ Groq API Key ausente o inválida, o ia_module no cargado.")
 
 # ============================================================
 # 2. FEATURE FLAGS & CONFIGURACIONES AVANZADAS
@@ -238,6 +238,7 @@ def migrate_database():
     try:
         with get_db_connection(DB_PATH) as conn:
             c = conn.cursor()
+            # Auditoría general de eventos
             c.execute('''
             CREATE TABLE IF NOT EXISTS auditoria (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -246,6 +247,7 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
+            # Favoritos de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS favoritos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -256,6 +258,7 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
+            # Feedback de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -265,6 +268,7 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
+            # Sesiones de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS sesiones (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -275,6 +279,7 @@ def migrate_database():
                 prefs_json TEXT
             )
             ''')
+            # Telemetría opt-out
             c.execute('''
             CREATE TABLE IF NOT EXISTS configuracion (
                 clave TEXT PRIMARY KEY,
@@ -460,7 +465,7 @@ def analizar_recurso_groq_sync(recurso: RecursoEducativo, perfil: Dict):
         }
         return
     try:
-        # Llamada directa al módulo externo
+        # Llamada directa al módulo externo (pasando parámetros individuales)
         data = ia_module.analizar_recurso_groq(
             titulo=recurso.titulo,
             descripcion=recurso.descripcion,
@@ -500,7 +505,6 @@ def chatgroq(mensajes: List[Dict[str, str]]) -> str:
         return "🧠 IA no disponible. Usa el buscador superior para encontrar cursos ahora."
     try:
         # ia_module.chatgroq espera un string (mensaje actual), no un historial completo
-        # Extraemos el último mensaje del usuario
         ultimo_mensaje = next((m['content'] for m in reversed(mensajes) if m['role'] == 'user'), "")
         
         if not ultimo_mensaje:
@@ -510,7 +514,8 @@ def chatgroq(mensajes: List[Dict[str, str]]) -> str:
 
     except Exception as e:
         logger.error(f"Error en chat Groq (ia_module): {e}")
-        return "Hubo un error con la IA. Intenta de nuevo."
+        # IMPORTANTE: Mostrar error real para depuración
+        return f"⚠️ Error de sistema IA: {str(e)}"
 
 # ============================================================
 # 8. BÚSQUEDA MULTICAPA (Google, Conocidas, Ocultas, DDG opcional)
@@ -1068,11 +1073,11 @@ def render_header():
 
 def render_search_form():
     col1, col2, col3 = st.columns([3, 1, 1])
-    # SE AÑADE key="search_main" para evitar el error de duplicados
-    tema = col1.text_input("¿Qué quieres aprender?", placeholder="Ej: Python, Machine Learning, Diseño UX...", key="search_main")
-    nivel = col2.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"])
-    idioma = col3.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"])
-    buscar = st.button("🚀 Buscar Cursos", type="primary", use_container_width=True)
+    # --- CORRECCIÓN 3: KEYS ÚNICAS PARA EVITAR ERROR DUPLICATE ID ---
+    tema = col1.text_input("¿Qué quieres aprender?", placeholder="Ej: Python, Machine Learning, Diseño UX...", key="search_topic_main")
+    nivel = col2.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"], key="search_level_main")
+    idioma = col3.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"], key="search_lang_main")
+    buscar = st.button("🚀 Buscar Cursos", type="primary", use_container_width=True, key="search_btn_main")
     return tema, nivel, idioma, buscar
 
 def render_results(resultados: List[RecursoEducativo]):
@@ -1161,9 +1166,11 @@ def main():
             with st.spinner("🔍 Buscando en múltiples fuentes..."):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                resultados = loop.run_until_complete(buscar_recursos_multicapa(tema.strip(), idioma, nivel))
+                resultados = loop.run_until_complete(buscar_recursos_multicapa_ext(tema.strip(), idioma, nivel))
                 loop.close()
             render_results(resultados)
+            registrar_muestreo_estadistico(resultados, tema.strip(), idioma, nivel)
+            render_notas_para_resultados(resultados)
 
     # Paneles avanzados
     st.markdown("### 🧭 Paneles avanzados")
@@ -1191,10 +1198,15 @@ def main():
 # 15. EVENT-BRIDGE PARA FAVORITOS (PostMessage desde botón HTML)
 # ============================================================
 def event_bridge():
+    # En Streamlit no hay listener directo para window.postMessage.
+    # Implementamos un puente simple: cuando el usuario hace click en Favorito,
+    # le pedimos que confirme en un control de texto el ID del recurso y lo guardamos.
     st.markdown("### 🔗 Puente de eventos (Favoritos)")
-    fav_id = st.text_input("ID del recurso a guardar como favorito (pegar desde botón)", key="fav_id_input")
-    fav_notas = st.text_input("Notas (opcional)", key="fav_notas_input")
-    if st.button("Guardar favorito manual", use_container_width=True, key="btn_guardar_fav"):
+    # --- CORRECCIÓN 3: KEYS ÚNICAS PARA EVITAR ERROR DUPLICATE ID ---
+    fav_id = st.text_input("ID del recurso a guardar como favorito (pegar desde botón)", key="fav_manual_id")
+    fav_notas = st.text_input("Notas (opcional)", key="fav_manual_notes")
+    if st.button("Guardar favorito manual", use_container_width=True, key="fav_manual_btn"):
+        # Sin resultados actuales, no podemos mapear; así que lo guardamos con URL vacía.
         r = RecursoEducativo(
             id=fav_id or f"manual_{int(time.time())}",
             titulo="Favorito manual",
@@ -1664,8 +1676,3 @@ def main_extended():
 if __name__ == "__main__":
     # Usar la versión extendida del main con más paneles
     main_extended()
-    # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
-    # end_session() podría llamarse en teardown manual si se desea.
-
-
-
