@@ -1350,15 +1350,21 @@ def log_viewer(max_lines: int = 200):
         st.error(f"Error leyendo logs: {e}")
 
 # ============================================================
-# 25. SESIONES DE USUARIO (PARCHE BLINDADO)
+# 25. SESIONES DE USUARIO (CORREGIDO Y BLINDADO)
 # ============================================================
 def ensure_session():
+    # 1. Crear el ID en memoria de Streamlit primero
     if "session_id" not in st.session_state:
         st.session_state.session_id = f"sess_{int(time.time())}_{random.randint(1000,9999)}"
+        
+        # 2. Intentar guardar en Base de Datos de forma segura
         try:
             with get_db_connection(DB_PATH) as conn:
                 c = conn.cursor()
-                # PARCHE: Crear tabla si no existe antes de insertar
+                
+                # --- PARCHE IMPORTANTE ---
+                # Creamos la tabla AQUÍ mismo por si acaso no existe todavía.
+                # Esto evita el error "no such table: sesiones" al iniciar.
                 c.execute('''
                 CREATE TABLE IF NOT EXISTS sesiones (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1369,22 +1375,17 @@ def ensure_session():
                     prefs_json TEXT
                 )
                 ''')
+                # -------------------------
+
+                # Ahora sí insertamos sin miedo
                 c.execute("INSERT INTO sesiones (session_id, started_at, device, prefs_json) VALUES (?, ?, ?, ?)",
                           (st.session_state.session_id, datetime.now().isoformat(), "web", safe_json_dumps(st.session_state.get('features', {}))))
                 conn.commit()
+                
         except Exception as e:
-            logger.error(f"⚠️ Error no crítico creando sesión: {e}")
-
-def end_session():
-    try:
-        with get_db_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("UPDATE sesiones SET ended_at = ? WHERE session_id = ? AND ended_at IS NULL",
-                      (datetime.now().isoformat(), st.session_state.session_id))
-            conn.commit()
-    except Exception as e:
-        logger.error(f"Error cerrando sesión: {e}")
-
+            # Si la base de datos falla (por permisos o bloqueo), 
+            # solo lo registramos en los logs PERO NO ROMPEMOS la app.
+            logger.error(f"⚠️ Error no crítico iniciando sesión DB: {e}")
 # ============================================================
 # 26. ACCESOS RÁPIDOS (TECLAS) Y AYUDA VISUAL
 # ============================================================
@@ -1580,3 +1581,4 @@ if __name__ == "__main__":
         main_extended()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
