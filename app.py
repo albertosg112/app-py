@@ -1,20 +1,5 @@
-# app.py — Consolidado Definitivo Ultra-Robust PRO (SG1 + Async + UI/Chat + Parches + Módulos Extra)
-# Objetivo: 1200+ líneas de código robusto y creativo, uniendo lo mejor de tus versiones, sin quitar funcionalidades.
-# Incluye:
-# - Búsqueda multicapa (Google API, plataformas conocidas, plataformas ocultas en DB)
-# - Caché expirable, deduplicación y orden por confianza
-# - Análisis IA con Groq en background (fallback seguro si no está disponible)
-# - Chat IA con limpieza de HTML/JSON visible
-# - UI moderna con badges, métricas, CSV export, favoritos y notas del usuario
-# - Base de datos con context manager, semilla restaurada y migraciones
-# - Panel de configuración avanzada, banderas de características, temas y accesibilidad
-# - Trazabilidad, auditoría, telemetría opt-out, perfilado liviano, y depuración
-# - Módulos creativos: marcadores, calificaciones, feedback del usuario, historial de sesiones
-# - Utilidades para limpieza, validación, normalización, test integrado básico
-# - Persistencia de estado en session_state y sincronización con la DB
-# - Extensiones (DDG opcional), import/export de búsquedas, modo offline con caché
-
-
+# app.py — Consolidado Definitivo Ultra-Robust PRO
+# Versión: 4.0 (Depurada y Unificada)
 
 import streamlit as st
 import pandas as pd
@@ -72,7 +57,7 @@ def async_profile(func: Callable):
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler('buscador_cursos.log'), logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("BuscadorProfesional")
 
@@ -244,7 +229,6 @@ def migrate_database():
     try:
         with get_db_connection(DB_PATH) as conn:
             c = conn.cursor()
-            # Auditoría general de eventos
             c.execute('''
             CREATE TABLE IF NOT EXISTS auditoria (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,7 +237,6 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
-            # Favoritos de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS favoritos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,7 +247,6 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
-            # Feedback de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -274,7 +256,6 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
-            # Sesiones de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS sesiones (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -285,7 +266,6 @@ def migrate_database():
                 prefs_json TEXT
             )
             ''')
-            # Telemetría opt-out: simple bandera global
             c.execute('''
             CREATE TABLE IF NOT EXISTS configuracion (
                 clave TEXT PRIMARY KEY,
@@ -439,13 +419,19 @@ def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool
     if any(i in t for i in invalidas): return False
     return any(v in t for v in validas) or any(d in url.lower() for d in dominios)
 
-# --- PARCHE DE LIMPIEZA PARA CHAT ---
+# --- PARCHE DE LIMPIEZA ROBUSTA PARA CHAT ---
 def limpiar_html_visible(texto: str) -> str:
     if not texto:
         return ""
-    texto = re.sub(r'\{.*\}\s*$', '', texto, flags=re.DOTALL).strip()  # bloque JSON al final
-    texto = re.sub(r'<[^>]+>', '', texto).strip()  # etiquetas HTML en toda la cadena
-    return texto
+    # 1. Eliminar bloques de código markdown (ej: ```json ... ```)
+    texto = re.sub(r'```.*?```', '', texto, flags=re.DOTALL)
+    # 2. Eliminar bloques JSON explícitos al final o inicio
+    texto = re.sub(r'^\s*\{.*\}\s*$', '', texto, flags=re.DOTALL | re.MULTILINE)
+    # 3. Eliminar etiquetas HTML
+    texto = re.sub(r'<[^>]+>', '', texto)
+    # 4. Eliminar artefactos de objetos JSON sueltos al final de la cadena
+    texto = re.sub(r'\{.*\}\s*$', '', texto, flags=re.DOTALL)
+    return texto.strip()
 
 def ui_chat_mostrar(mensaje: str, rol: str):
     texto_limpio = limpiar_html_visible(mensaje)
@@ -1174,179 +1160,44 @@ def render_footer():
     """, unsafe_allow_html=True)
 
 # ============================================================
-# 14. MAIN APP (VERSIÓN CORREGIDA)
+# 14. EVENT-BRIDGE PARA FAVORITOS (PostMessage desde botón HTML)
 # ============================================================
-def main_app():
-    # --- Inicializaciones y renderizado de UI estática ---
-    ensure_session()
-    init_feature_flags()
-    iniciar_tareas_background()
-    render_header()
-
-    # --- Formulario de búsqueda ---
-    tema = st.text_input("¿Qué quieres aprender?", placeholder="Ej: Python...", key="search_topic_input")
-    col_form1, col_form2 = st.columns(2)
-    nivel = col_form1.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"], key="search_level_select")
-    idioma = col_form2.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"], key="search_lang_select")
-
-    # --- Lógica de Búsqueda y Estado ---
-    if st.button("🚀 Buscar Cursos", type="primary", use_container_width=True):
-        if not (tema or "").strip():
-            st.warning("Por favor ingresa un tema.")
+def event_bridge():
+    # En Streamlit no hay listener directo para window.postMessage.
+    # Implementamos un puente simple: cuando el usuario hace click en Favorito,
+    # le pedimos que confirme en un control de texto el ID del recurso y lo guardamos.
+    st.markdown("### 🔗 Puente de eventos (Favoritos)")
+    fav_id = st.text_input("ID del recurso a guardar como favorito (pegar desde botón)")
+    fav_notas = st.text_input("Notas (opcional)")
+    if st.button("Guardar favorito manual", use_container_width=True):
+        # Sin resultados actuales, no podemos mapear; así que lo guardamos con URL vacía.
+        r = RecursoEducativo(
+            id=fav_id or f"manual_{int(time.time())}",
+            titulo="Favorito manual",
+            url="",
+            descripcion="Añadido manualmente",
+            plataforma="Manual",
+            idioma="es",
+            nivel="Intermedio",
+            categoria="General",
+            certificacion=None,
+            confianza=0.8,
+            tipo="verificada",
+            ultima_verificacion=datetime.now().isoformat(),
+            activo=True,
+            metadatos={}
+        )
+        ok = agregar_favorito(r, fav_notas)
+        if ok:
+            st.success("Favorito guardado")
         else:
-            with st.spinner("🔍 Buscando en múltiples fuentes..."):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                st.session_state.resultados = loop.run_until_complete(buscar_recursos_multicapa_ext(tema.strip(), idioma, nivel))
-                loop.close()
-            if 'resultados' in st.session_state and st.session_state.resultados:
-                 registrar_muestreo_estadistico(st.session_state.resultados, tema.strip(), idioma, nivel)
-            st.rerun()
-
-    # --- Renderizado de Contenido Dinámico ---
-    current_results = st.session_state.get('resultados', [])
-    if current_results:
-        render_results(current_results)
-        render_notas_para_resultados(current_results)
-
-    # --- Paneles Avanzados y de Diagnóstico ---
-    st.markdown("---")
-    st.markdown("### 🧭 Paneles Avanzados y de Diagnóstico")
-    colA, colB = st.columns(2)
-    with colA:
-        panel_configuracion_avanzada()
-        panel_favoritos_ui()
-        panel_feedback_ui(current_results)
-    with colB:
-        admin_dashboard()
-        log_viewer()
-        panel_cache_viewer()
-
-    # --- Secciones de Ayuda y Otros ---
-    st.markdown("---")
-    render_help()
-    keyboard_tips()
-    render_telemetry()
-    run_basic_tests()
-
-    # --- Componentes Persistentes (Sidebar y Footer) ---
-    sidebar_chat()
-    sidebar_status()
-    render_footer()
-
-# ============================================================
-# 15. PUNTO DE ENTRADA ÚNICO Y FINAL DEL SCRIPT
-# ============================================================
-if __name__ == "__main__":
-    main_app()
-# ============================================================
-# 16. PRUEBAS BÁSICAS (Sanity Checks)
-# ============================================================
-def run_basic_tests():
-    st.markdown("### 🧪 Pruebas básicas")
-    try:
-        # Test de utilidades
-        assert determinar_nivel("Curso avanzado", "Cualquiera") == "Avanzado"
-        assert determinar_nivel("Curso básico", "Cualquiera") == "Principiante"
-        assert determinar_nivel("Curso intermedio", "Cualquiera") == "Intermedio"
-        assert determinar_categoria("Python para ciencia de datos") == "Data Science" or determinar_categoria("Python para ciencia de datos") == "Programación"
-        # Test DB
-        with get_db_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM plataformas_ocultas")
-            count = c.fetchone()[0]
-            assert count >= 5
-        st.success("Pruebas básicas OK")
-    except AssertionError:
-        st.error("Falló una aserción en pruebas básicas")
-    except Exception as e:
-        st.error(f"Error en pruebas básicas: {e}")
-
-# ============================================================
-# 17. SECCIÓN AYUDA & ATAJOS
-# ============================================================
-def render_help():
-    st.markdown("### ❓ Ayuda y atajos")
-    st.markdown("- Escribe un tema y pulsa 'Buscar Cursos'.")
-    st.markdown("- Activa/desactiva características en Configuración avanzada.")
-    st.markdown("- Añade favoritos y exporta resultados a CSV.")
-    st.markdown("- Usa el chat IA para consejos rápidos (si Groq está disponible).")
-    st.markdown("- Si la IA muestra HTML/JSON, se limpiará automáticamente en la UI (parche aplicado).")
-    st.markdown("- Atajos: [Shift+Enter] para enviar en chat, [Alt+R] para refrescar (según navegador).")
-
-# ============================================================
-# 18. TELEMETRÍA OPT-OUT (solo bandera persistente)
-# ============================================================
-def set_telemetry_opt_out(value: bool):
-    try:
-        with get_db_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO configuracion (clave, valor) VALUES (?, ?)", ("telemetry_opt_out", "1" if value else "0"))
-            conn.commit()
-        st.success("Preferencia de telemetría actualizada")
-    except Exception as e:
-        logger.error(f"Error en telemetría opt-out: {e}")
-        st.error("No se pudo actualizar la preferencia")
-
-def render_telemetry():
-    st.markdown("### 🔒 Privacidad y Telemetría")
-    try:
-        with get_db_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT valor FROM configuracion WHERE clave = 'telemetry_opt_out'")
-            row = c.fetchone()
-            opt_out = (row and row[0] == "1")
-    except Exception:
-        opt_out = False
-    new_val = st.checkbox("Desactivar telemetría anónima", value=opt_out)
-    if new_val != opt_out:
-        set_telemetry_opt_out(new_val)
-
-# ============================================================
-# 19. EJECUCIÓN
-# ============================================================
-if __name__ == "__main__":
-    main()
-    event_bridge()
-    run_basic_tests()
-    render_help()
-    render_telemetry()
-        # ============================================================
-    # Finalización del ciclo de ejecución
-    # ============================================================
-
-    try:
-        # Registrar fin de sesión si corresponde
-        if "session_id" in st.session_state:
-            end_session()
-            logger.info(f"🛑 Sesión finalizada: {st.session_state.session_id}")
-        else:
-            logger.warning("⚠️ No se encontró session_id para cerrar sesión")
-
-        # Confirmar estado final
-        logger.info("✅ Aplicación ejecutada correctamente hasta el final")
-        st.toast("✅ Aplicación ejecutada con éxito", icon="🎉")
-
-    except Exception as e:
-        logger.error(f"❌ Error en cierre de ejecución: {e}")
-        st.error("Ocurrió un error al finalizar la aplicación. Revisa los logs para más detalles.")
-
-    finally:
-        # Limpieza opcional de recursos
-        if "background_started" in st.session_state:
-            logger.info("🧹 Finalizando workers en segundo plano")
-            for _ in range(MAX_BACKGROUND_TASKS):
-                background_tasks.put(None)  # Señal de cierre
+            st.error("No se pudo guardar el favorito")
 
 # ============================================================
 # 20. DUCKDUCKGO FALLBACK (OPCIONAL)
 # ============================================================
 @async_profile
 async def buscar_en_duckduckgo(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    """
-    Búsqueda simple en DuckDuckGo como fallback opcional.
-    Nota: DDG no tiene API oficial libre para resultados detallados; usamos HTML básico si se habilita.
-    """
     if not st.session_state.features.get("enable_ddg_fallback", False):
         return []
     try:
@@ -1357,7 +1208,6 @@ async def buscar_en_duckduckgo(tema: str, idioma: str, nivel: str) -> List[Recur
                 if resp.status != 200:
                     return []
                 text = await resp.text()
-                # Parsing muy básico para extraer enlaces (sin BeautifulSoup para mantenerlo opcional)
                 links = re.findall(r'href="(https?://[^"]+)"', text)
                 resultados: List[RecursoEducativo] = []
                 for link in links[:5]:
@@ -1386,7 +1236,6 @@ async def buscar_en_duckduckgo(tema: str, idioma: str, nivel: str) -> List[Recur
         logger.error(f"DDG fallback error: {e}")
         return []
 
-# Extender la búsqueda multicapa para usar DDG si Google está deshabilitado o vacío
 @async_profile
 async def buscar_recursos_multicapa_ext(tema: str, idioma_seleccion_ui: str, nivel: str) -> List[RecursoEducativo]:
     base = await buscar_recursos_multicapa(tema, idioma_seleccion_ui, nivel)
@@ -1417,7 +1266,6 @@ def log_click_event(tema: str, url: str, plataforma: str):
     try:
         with get_db_connection(DB_PATH) as conn:
             c = conn.cursor()
-            # Para simplicidad, incrementamos conteo en la última fila del mismo tema
             c.execute("""
                 UPDATE analiticas_busquedas
                 SET veces_clickeado = veces_clickeado + 1
@@ -1433,56 +1281,12 @@ def registrar_muestreo_estadistico(resultados: List[RecursoEducativo], tema: str
     plataformas = ", ".join(sorted(set(r.plataforma for r in resultados)))
     log_search_event(tema, idioma, nivel, plataformas, len(resultados))
 
-# Botón de registrar click manual (no captura onclick del enlace por limitaciones)
 def boton_registrar_click(r: RecursoEducativo, tema: str):
     col1, col2 = st.columns([4, 1])
     with col2:
         if st.button("🔖 Registrar click", key=f"reg_click_{r.id}"):
             log_click_event(tema, r.url, r.plataforma)
             st.success("Click registrado")
-
-# ============================================================
-# 22. ACCESIBILIDAD E I18N SIMPLE
-# ============================================================
-I18N = {
-    "es": {
-        "search_button": "🚀 Buscar Cursos",
-        "enter_topic": "¿Qué quieres aprender?",
-        "level": "Nivel",
-        "language": "Idioma",
-        "results_found": "Se encontraron {n} recursos verificados.",
-        "no_results": "No se encontraron resultados. Intenta con términos más generales.",
-        "favorites": "Favoritos",
-        "feedback": "Feedback",
-        "export_import": "Exportar / Importar",
-    },
-    "en": {
-        "search_button": "🚀 Search Courses",
-        "enter_topic": "What do you want to learn?",
-        "level": "Level",
-        "language": "Language",
-        "results_found": "{n} verified resources found.",
-        "no_results": "No results found. Try broader terms.",
-        "favorites": "Favorites",
-        "feedback": "Feedback",
-        "export_import": "Export / Import",
-    },
-    "pt": {
-        "search_button": "🚀 Buscar Cursos",
-        "enter_topic": "O que você quer aprender?",
-        "level": "Nível",
-        "language": "Idioma",
-        "results_found": "{n} recursos verificados encontrados.",
-        "no_results": "Nenhum resultado encontrado. Tente termos mais gerais.",
-        "favorites": "Favoritos",
-        "feedback": "Feedback",
-        "export_import": "Exportar / Importar",
-    }
-}
-
-def get_i18n(lang_ui: str) -> Dict[str, str]:
-    code = get_codigo_idioma(lang_ui)
-    return I18N.get(code, I18N["es"])
 
 # ============================================================
 # 23. ADMIN DASHBOARD
@@ -1492,7 +1296,6 @@ def admin_dashboard():
     try:
         with get_db_connection(DB_PATH) as conn:
             c = conn.cursor()
-            # Totales
             c.execute("SELECT COUNT(*) FROM analiticas_busquedas")
             t_busquedas = c.fetchone()[0]
             c.execute("SELECT COUNT(*) FROM plataformas_ocultas WHERE activa = 1")
@@ -1547,7 +1350,7 @@ def log_viewer(max_lines: int = 200):
         st.error(f"Error leyendo logs: {e}")
 
 # ============================================================
-# 25. SESIONES DE USUARIO
+# 25. SESIONES DE USUARIO (PARCHE BLINDADO)
 # ============================================================
 def ensure_session():
     if "session_id" not in st.session_state:
@@ -1555,11 +1358,22 @@ def ensure_session():
         try:
             with get_db_connection(DB_PATH) as conn:
                 c = conn.cursor()
+                # PARCHE: Crear tabla si no existe antes de insertar
+                c.execute('''
+                CREATE TABLE IF NOT EXISTS sesiones (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    device TEXT,
+                    prefs_json TEXT
+                )
+                ''')
                 c.execute("INSERT INTO sesiones (session_id, started_at, device, prefs_json) VALUES (?, ?, ?, ?)",
-                          (st.session_state.session_id, datetime.now().isoformat(), "web", safe_json_dumps(st.session_state.features)))
+                          (st.session_state.session_id, datetime.now().isoformat(), "web", safe_json_dumps(st.session_state.get('features', {}))))
                 conn.commit()
         except Exception as e:
-            logger.error(f"Error creando sesión: {e}")
+            logger.error(f"⚠️ Error no crítico creando sesión: {e}")
 
 def end_session():
     try:
@@ -1595,7 +1409,6 @@ def notas_usuario_widget(r: RecursoEducativo):
         else:
             st.error("No se pudo guardar la nota.")
 
-# Integración opcional en render de resultados (no reemplaza la UI principal)
 def render_notas_para_resultados(resultados: List[RecursoEducativo]):
     st.markdown("### 🗂️ Notas rápidas")
     for r in resultados[:3]:
@@ -1626,7 +1439,70 @@ def reportes_rapidos():
         st.error(f"Error reporte: {e}")
 
 # ============================================================
-# 29. EXTENDER MAIN CON NUEVAS SECCIONES
+# 16. PRUEBAS BÁSICAS (Sanity Checks)
+# ============================================================
+def run_basic_tests():
+    with st.expander("🧪 Pruebas básicas (Diagnóstico)"):
+        try:
+            # Test de utilidades
+            assert determinar_nivel("Curso avanzado", "Cualquiera") == "Avanzado"
+            assert determinar_nivel("Curso básico", "Cualquiera") == "Principiante"
+            assert determinar_nivel("Curso intermedio", "Cualquiera") == "Intermedio"
+            assert determinar_categoria("Python para ciencia de datos") == "Data Science" or determinar_categoria("Python para ciencia de datos") == "Programación"
+            # Test DB
+            with get_db_connection(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) FROM plataformas_ocultas")
+                count = c.fetchone()[0]
+                assert count >= 5
+            st.success("Pruebas básicas OK")
+        except AssertionError:
+            st.error("Falló una aserción en pruebas básicas")
+        except Exception as e:
+            st.error(f"Error en pruebas básicas: {e}")
+
+# ============================================================
+# 17. SECCIÓN AYUDA & ATAJOS
+# ============================================================
+def render_help():
+    with st.expander("❓ Ayuda"):
+        st.markdown("- Escribe un tema y pulsa 'Buscar Cursos'.")
+        st.markdown("- Activa/desactiva características en Configuración avanzada.")
+        st.markdown("- Añade favoritos y exporta resultados a CSV.")
+        st.markdown("- Usa el chat IA para consejos rápidos (si Groq está disponible).")
+        st.markdown("- Si la IA muestra HTML/JSON, se limpiará automáticamente en la UI (parche aplicado).")
+        st.markdown("- Atajos: [Shift+Enter] para enviar en chat, [Alt+R] para refrescar (según navegador).")
+
+# ============================================================
+# 18. TELEMETRÍA OPT-OUT (solo bandera persistente)
+# ============================================================
+def set_telemetry_opt_out(value: bool):
+    try:
+        with get_db_connection(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO configuracion (clave, valor) VALUES (?, ?)", ("telemetry_opt_out", "1" if value else "0"))
+            conn.commit()
+        st.success("Preferencia de telemetría actualizada")
+    except Exception as e:
+        logger.error(f"Error en telemetría opt-out: {e}")
+        st.error("No se pudo actualizar la preferencia")
+
+def render_telemetry():
+    with st.expander("🔒 Privacidad y Telemetría"):
+        try:
+            with get_db_connection(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT valor FROM configuracion WHERE clave = 'telemetry_opt_out'")
+                row = c.fetchone()
+                opt_out = (row and row[0] == "1")
+        except Exception:
+            opt_out = False
+        new_val = st.checkbox("Desactivar telemetría anónima", value=opt_out)
+        if new_val != opt_out:
+            set_telemetry_opt_out(new_val)
+
+# ============================================================
+# 29. EXTENDER MAIN CON NUEVAS SECCIONES (CORE LOGIC)
 # ============================================================
 def main_extended():
     ensure_session()
@@ -1636,18 +1512,33 @@ def main_extended():
     tema, nivel, idioma, buscar = render_search_form()
 
     resultados: List[RecursoEducativo] = []
+    
+    # Manejo de estado de resultados para persistencia durante interacciones
+    if 'last_results' not in st.session_state:
+        st.session_state.last_results = []
+
     if buscar:
         if not (tema or "").strip():
             st.warning("Por favor ingresa un tema.")
         else:
             with st.spinner("🔍 Buscando en múltiples fuentes..."):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                # PARCHE ASYNCIO PARA STREAMLIT CLOUD
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
                 resultados = loop.run_until_complete(buscar_recursos_multicapa_ext(tema.strip(), idioma, nivel))
-                loop.close()
-            render_results(resultados)
+                st.session_state.last_results = resultados
+            
             registrar_muestreo_estadistico(resultados, tema.strip(), idioma, nivel)
-            render_notas_para_resultados(resultados)
+    else:
+        resultados = st.session_state.last_results
+
+    if resultados:
+        render_results(resultados)
+        render_notas_para_resultados(resultados)
 
     # Paneles avanzados
     st.markdown("### 🧭 Paneles avanzados")
@@ -1671,25 +1562,21 @@ def main_extended():
     log_viewer()
 
     # Ayuda y atajos
+    render_help()
     keyboard_tips()
+    render_telemetry()
+    run_basic_tests()
 
-    # Sidebar
+    # Sidebar y Footer
     sidebar_chat()
     sidebar_status()
-
-    # Footer y cierre de sesión (cuando el usuario recarga o sale)
     render_footer()
 
 # ============================================================
-# 30. ARRANQUE
+# 30. ARRANQUE (PUNTO DE ENTRADA ÚNICO)
 # ============================================================
 if __name__ == "__main__":
-    # Usar la versión extendida del main con más paneles
-    main_extended()
-    # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
-    # end_session() podría llamarse en teardown manual si se desea.
-
-
-
-
-
+    try:
+        main_extended()
+    except Exception as e:
+        st.error(f"Error crítico en la aplicación: {e}")
