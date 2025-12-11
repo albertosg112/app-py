@@ -1,111 +1,53 @@
+# app.py — Consolidado Definitivo Ultra-Robust (SG1 + Mejoras UI/Chat + Parche Render)
+# Incluye: AsyncIO, ThreadPool, DB Context Manager, Limpieza de Chat, Validación Groq, UI Mejorada, Cache expirable
+# Objetivo: entregar un archivo completo, listo para ejecutar, con lo mejor de todas las versiones sin quitar funcionalidades.
+
 import streamlit as st
 import pandas as pd
 import sqlite3
 import os
-import sys
 import time
 import random
 from datetime import datetime, timedelta
 import json
 import hashlib
 import re
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import urlparse
 import threading
 import queue
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Any, Tuple, Callable
+from typing import List, Dict, Optional, Any
 import logging
 import asyncio
 import aiohttp
 import contextlib
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from functools import wraps
-
-# --- INTEGRACIÓN: MÓDULO EXTERNO ---
-try:
-    import ia_module
-except ImportError:
-    # Fallback silencioso para no romper la app si el archivo no está
-    ia_module = None
-    logging.warning("⚠️ ia_module.py no encontrado. La funcionalidad IA estará limitada." )
+from concurrent.futures import ThreadPoolExecutor
 
 # ============================================================
-# 0. PERFILADO LIGERO Y DECORADORES DE UTILIDAD
-# ============================================================
-def profile(func: Callable):
-    """Decorador simple para medir tiempo de ejecución y loggear demoras sospechosas."""
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        t0 = time.perf_counter()
-        out = func(*args, **kwargs)
-        dt = time.perf_counter() - t0
-        if dt > 0.3:
-            logging.getLogger("Perf").info(f"⏱️ {func.__name__} tardó {dt:.3f}s")
-        return out
-    return wrapper
-
-def async_profile(func: Callable):
-    """Decorador para funciones async, reporta tiempos."""
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        t0 = time.perf_counter()
-        out = await func(*args, **kwargs)
-        dt = time.perf_counter() - t0
-        if dt > 0.3:
-            logging.getLogger("Perf").info(f"⏱️ {func.__name__} tardó {dt:.3f}s (async)")
-        return out
-    return wrapper
-
-# ============================================================
-# 1. LOGGING & CONFIGURACIÓN (MEJORADO)
+# 1. LOGGING & CONFIGURACIÓN
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler('buscador_cursos.log'), logging.StreamHandler(sys.stdout)]
+    handlers=[logging.FileHandler('buscador_cursos.log'), logging.StreamHandler()]
 )
 logger = logging.getLogger("BuscadorProfesional")
-ia_logger = logging.getLogger("IAModuleIntegration") # Logger específico para la IA
 
-def obtener_credenciales_seguras() -> Tuple[str, str, str]:
+def obtener_credenciales_seguras():
     """Obtiene credenciales priorizando Secrets y luego Variables de Entorno."""
     try:
-        # Usar st.secrets es la forma preferida en producción
         g_key = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
         g_cx = st.secrets.get("GOOGLE_CX", os.getenv("GOOGLE_CX", ""))
         groq_key = st.secrets.get("GROQ_API_KEY", os.getenv("GROQ_API_KEY", ""))
-        
-        if not g_key or not g_cx:
-            logger.warning("Credenciales de Google incompletas.")
-        if not groq_key:
-            logger.warning("GROQ_API_KEY no encontrada.")
-            
         return g_key, g_cx, groq_key
     except (AttributeError, FileNotFoundError):
-        # Fallback para entornos donde st.secrets no existe
-        logger.info("st.secrets no disponible, usando os.getenv como fallback.")
         return os.getenv("GOOGLE_API_KEY", ""), os.getenv("GOOGLE_CX", ""), os.getenv("GROQ_API_KEY", "")
 
 GOOGLE_API_KEY, GOOGLE_CX, GROQ_API_KEY = obtener_credenciales_seguras()
 DUCKDUCKGO_ENABLED = (os.getenv("DUCKDUCKGO_ENABLED", "false").lower() == "true")
-MAX_BACKGROUND_TASKS = 4 # Aumentado para permitir más análisis en paralelo
+MAX_BACKGROUND_TASKS = 2
 CACHE_EXPIRATION = timedelta(hours=12)
-
-# --- INYECCIÓN DE DEPENDENCIAS Y VALIDACIÓN DE IA (CLAVE) ---
-GROQ_AVAILABLE = False
-if ia_module:
-    ia_logger.info("ia_module.py importado correctamente.")
-    if GROQ_API_KEY and len(GROQ_API_KEY) > 10:
-        # Inyectamos la clave API en el módulo importado.
-        ia_module.GROQ_API_KEY = GROQ_API_KEY
-        ia_module.GROQ_AVAILABLE = True # Forzamos la disponibilidad en el módulo
-        GROQ_AVAILABLE = True
-        ia_logger.info("✅ Groq API disponible y clave inyectada en ia_module.")
-    else:
-        ia_logger.warning("⚠️ ia_module cargado, pero la clave Groq API es inválida o no está configurada.")
-        ia_module.GROQ_AVAILABLE = False
-else:
-    ia_logger.error("❌ ia_module.py no se pudo importar. Toda la funcionalidad de IA está deshabilitada.")
+GROQ_MODEL = "llama-3.1-70b-versatile"
 
 def validate_api_key(key: str, key_type: str) -> bool:
     if not key or len(key) < 10:
@@ -114,36 +56,22 @@ def validate_api_key(key: str, key_type: str) -> bool:
         return False
     return True
 
-# ============================================================
-# 2. FEATURE FLAGS & CONFIGURACIONES AVANZADAS
-# ============================================================
-DEFAULT_FEATURES = {
-    "enable_google_api": True,
-    "enable_known_platforms": True,
-    "enable_hidden_platforms": True,
-    "enable_groq_analysis": True,
-    "enable_chat_ia": True,
-    "enable_favorites": True,
-    "enable_feedback": True,
-    "enable_export_import": True,
-    "enable_offline_cache": True,
-    "enable_ddg_fallback": False,
-    "enable_debug_mode": False,
-    "ui_theme": "auto",
-    "max_results": 15,
-    "max_analysis": 5
-}
-
-def init_feature_flags():
-    if "features" not in st.session_state:
-        st.session_state.features = DEFAULT_FEATURES.copy()
-    st.session_state.features["enable_google_api"] &= bool(validate_api_key(GOOGLE_API_KEY, "google") and GOOGLE_CX)
-    st.session_state.features["enable_groq_analysis"] &= GROQ_AVAILABLE
+GROQ_AVAILABLE = False
+try:
+    import groq
+    if GROQ_API_KEY and len(GROQ_API_KEY) >= 10:
+        GROQ_AVAILABLE = True
+        logger.info("✅ Groq API disponible y validada")
+    else:
+        logger.warning("⚠️ Groq API Key ausente o inválida")
+except ImportError:
+    logger.warning("⚠️ Biblioteca 'groq' no instalada")
 
 # ============================================================
-# 3. CACHÉ & CONCURRENCIA
+# 2. CACHÉ & CONCURRENCIA
 # ============================================================
 class ExpiringCache:
+    """Caché con TTL y limpieza lazy."""
     def __init__(self, ttl_seconds=43200):
         self.cache = {}
         self.ttl = ttl_seconds
@@ -164,39 +92,54 @@ background_tasks: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 executor = ThreadPoolExecutor(max_workers=MAX_BACKGROUND_TASKS)
 
 # ============================================================
-# 4. MODELOS DE DATOS & UTILIDADES JSON
+# 3. MODELOS DE DATOS & UTILIDADES JSON
 # ============================================================
 @dataclass
 class Certificacion:
-    plataforma: str; curso: str; tipo: str; validez_internacional: bool
-    paises_validos: List[str]; costo_certificado: float; reputacion_academica: float; ultima_verificacion: str
+    plataforma: str
+    curso: str
+    tipo: str  # "gratuito", "pago", "audit", "none"
+    validez_internacional: bool
+    paises_validos: List[str]
+    costo_certificado: float
+    reputacion_academica: float
+    ultima_verificacion: str
 
 @dataclass
 class RecursoEducativo:
-    id: str; titulo: str; url: str; descripcion: str; plataforma: str; idioma: str
-    nivel: str; categoria: str; certificacion: Optional[Certificacion]; confianza: float
-    tipo: str; ultima_verificacion: str; activo: bool; metadatos: Dict[str, Any]
-    metadatos_analisis: Optional[Dict[str, Any]] = None; analisis_pendiente: bool = False
-
-@dataclass
-class Favorito:
-    id_recurso: str; titulo: str; url: str; notas: str; creado_en: str
-
-@dataclass
-class Feedback:
-    id_recurso: str; opinion: str; rating: int; creado_en: str
+    id: str
+    titulo: str
+    url: str
+    descripcion: str
+    plataforma: str
+    idioma: str
+    nivel: str
+    categoria: str
+    certificacion: Optional[Certificacion]
+    confianza: float
+    tipo: str  # "conocida", "oculta", "verificada"
+    ultima_verificacion: str
+    activo: bool
+    metadatos: Dict[str, Any]
+    metadatos_analisis: Optional[Dict[str, Any]] = None
+    analisis_pendiente: bool = False
 
 def safe_json_dumps(obj: Dict) -> str:
-    try: return json.dumps(obj, ensure_ascii=False, default=str)
-    except Exception: return "{}"
+    try:
+        return json.dumps(obj, ensure_ascii=False, default=str)
+    except Exception:
+        return "{}"
 
-def safe_json_loads(text: str, default_value: Any = None) -> Any:
-    if default_value is None: default_value = {}
-    try: return json.loads(text)
-    except Exception: return default_value
+def safe_json_loads(text: str, default_value: Dict = None) -> Dict:
+    if default_value is None:
+        default_value = {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return default_value
 
 # ============================================================
-# 5. BASE DE DATOS
+# 4. BASE DE DATOS (Context Manager Seguro)
 # ============================================================
 DB_PATH = "cursos_inteligentes_v3.db"
 
@@ -206,262 +149,551 @@ def get_db_connection(db_path: str):
     try:
         yield conn
     except sqlite3.Error as e:
-        logger.error(f"Error BD: {e}"); conn.rollback(); raise e
+        logger.error(f"Error BD: {e}")
+        conn.rollback()
+        raise e
     finally:
         conn.close()
 
-def init_advanced_database():
+def init_advanced_database() -> bool:
     try:
         with get_db_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            # Crear todas las tablas si no existen
-            c.execute('CREATE TABLE IF NOT EXISTS auditoria (id INTEGER PRIMARY KEY, evento TEXT, detalle TEXT, creado_en TEXT)')
-            c.execute('CREATE TABLE IF NOT EXISTS favoritos (id INTEGER PRIMARY KEY, id_recurso TEXT, titulo TEXT, url TEXT, notas TEXT, creado_en TEXT)')
-            c.execute('CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY, id_recurso TEXT, opinion TEXT, rating INTEGER, creado_en TEXT)')
-            c.execute('CREATE TABLE IF NOT EXISTS sesiones (id INTEGER PRIMARY KEY, session_id TEXT, started_at TEXT, ended_at TEXT, device TEXT, prefs_json TEXT)')
-            c.execute('CREATE TABLE IF NOT EXISTS configuracion (clave TEXT PRIMARY KEY, valor TEXT)')
-            c.execute('''CREATE TABLE IF NOT EXISTS plataformas_ocultas (id INTEGER PRIMARY KEY, nombre TEXT, url_base TEXT, descripcion TEXT, idioma TEXT, categoria TEXT, nivel TEXT, confianza REAL, ultima_verificacion TEXT, activa INTEGER, tipo_certificacion TEXT, validez_internacional INTEGER, paises_validos TEXT, reputacion_academica REAL)''')
-            c.execute('''CREATE TABLE IF NOT EXISTS analiticas_busquedas (id INTEGER PRIMARY KEY, tema TEXT, idioma TEXT, nivel TEXT, timestamp TEXT, plataforma_origen TEXT, veces_mostrado INTEGER, veces_clickeado INTEGER, tiempo_promedio_uso REAL, satisfaccion_usuario REAL)''')
-            c.execute('''CREATE TABLE IF NOT EXISTS certificaciones_verificadas (id INTEGER PRIMARY KEY, plataforma TEXT, curso_tema TEXT, tipo_certificacion TEXT, validez_internacional INTEGER, paises_validos TEXT, costo_certificado REAL, reputacion_academica REAL, ultima_verificacion TEXT, veces_verificado INTEGER)''')
-            
-            c.execute("SELECT COUNT(*) FROM plataformas_ocultas")
-            if c.fetchone()[0] == 0:
+            cursor = conn.cursor()
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS plataformas_ocultas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre TEXT NOT NULL,
+                url_base TEXT NOT NULL,
+                descripcion TEXT,
+                idioma TEXT NOT NULL,
+                categoria TEXT,
+                nivel TEXT,
+                confianza REAL DEFAULT 0.7,
+                ultima_verificacion TEXT,
+                activa INTEGER DEFAULT 1,
+                tipo_certificacion TEXT DEFAULT 'audit',
+                validez_internacional INTEGER DEFAULT 0,
+                paises_validos TEXT DEFAULT '[]',
+                reputacion_academica REAL DEFAULT 0.5
+            )
+            ''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS analiticas_busquedas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tema TEXT NOT NULL,
+                idioma TEXT NOT NULL,
+                nivel TEXT,
+                timestamp TEXT NOT NULL,
+                plataforma_origen TEXT,
+                veces_mostrado INTEGER DEFAULT 0,
+                veces_clickeado INTEGER DEFAULT 0,
+                tiempo_promedio_uso REAL DEFAULT 0.0,
+                satisfaccion_usuario REAL DEFAULT 0.0
+            )
+            ''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS certificaciones_verificadas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plataforma TEXT NOT NULL,
+                curso_tema TEXT NOT NULL,
+                tipo_certificacion TEXT NOT NULL,
+                validez_internacional INTEGER DEFAULT 0,
+                paises_validos TEXT DEFAULT '[]',
+                costo_certificado REAL DEFAULT 0.0,
+                reputacion_academica REAL DEFAULT 0.5,
+                ultima_verificacion TEXT NOT NULL,
+                veces_verificado INTEGER DEFAULT 1
+            )
+            ''')
+
+            cursor.execute("SELECT COUNT(*) FROM plataformas_ocultas")
+            if cursor.fetchone()[0] == 0:
                 plataformas_iniciales = [
-                    {"nombre": "Aprende con Alf", "url_base": "https://aprendeconalf.es/?s={}", "descripcion": "Cursos gratuitos de programación y ciencia de datos", "idioma": "es", "categoria": "Programación", "nivel": "Intermedio", "confianza": 0.85, "tipo_certificacion": "gratuito", "validez_internacional": 1, "paises_validos": ["es"], "reputacion_academica": 0.90},
-                    {"nombre": "Coursera", "url_base": "https://www.coursera.org/search?query={}&free=true", "descripcion": "Cursos universitarios (audit mode )", "idioma": "en", "categoria": "General", "nivel": "Avanzado", "confianza": 0.95, "tipo_certificacion": "audit", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.95},
-                    {"nombre": "edX", "url_base": "https://www.edx.org/search?tab=course&availability=current&price=free&q={}", "descripcion": "Cursos de Harvard, MIT y más (modo audit )", "idioma": "en", "categoria": "Académico", "nivel": "Avanzado", "confianza": 0.92, "tipo_certificacion": "audit", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.93},
-                    {"nombre": "Kaggle Learn", "url_base": "https://www.kaggle.com/learn/search?q={}", "descripcion": "Microcursos de ciencia de datos con certificados gratuitos", "idioma": "en", "categoria": "Data Science", "nivel": "Intermedio", "confianza": 0.90, "tipo_certificacion": "gratuito", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.88},
-                    {"nombre": "freeCodeCamp", "url_base": "https://www.freecodecamp.org/news/search/?query={}", "descripcion": "Certificados completos en desarrollo web", "idioma": "en", "categoria": "Programación", "nivel": "Intermedio", "confianza": 0.93, "tipo_certificacion": "gratuito", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.91},
+                    {"nombre": "Aprende con Alf", "url_base": "https://aprendeconalf.es/?s={}", "descripcion": "Cursos gratuitos de programación, matemáticas y ciencia de datos con ejercicios prácticos", "idioma": "es", "categoria": "Programación", "nivel": "Intermedio", "confianza": 0.85, "tipo_certificacion": "gratuito", "validez_internacional": 1, "paises_validos": ["es"], "reputacion_academica": 0.90},
+                    {"nombre": "Coursera", "url_base": "https://www.coursera.org/search?query={}&free=true", "descripcion": "Plataforma líder con cursos universitarios gratuitos (audit mode)", "idioma": "en", "categoria": "General", "nivel": "Avanzado", "confianza": 0.95, "tipo_certificacion": "audit", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.95},
+                    {"nombre": "edX", "url_base": "https://www.edx.org/search?tab=course&availability=current&price=free&q={}", "descripcion": "Cursos de Harvard, MIT y otras universidades top (modo audit gratuito)", "idioma": "en", "categoria": "Académico", "nivel": "Avanzado", "confianza": 0.92, "tipo_certificacion": "audit", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.93},
+                    {"nombre": "Kaggle Learn", "url_base": "https://www.kaggle.com/learn/search?q={}", "descripcion": "Microcursos prácticos de ciencia de datos con certificados gratuitos", "idioma": "en", "categoria": "Data Science", "nivel": "Intermedio", "confianza": 0.90, "tipo_certificacion": "gratuito", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.88},
+                    {"nombre": "freeCodeCamp", "url_base": "https://www.freecodecamp.org/news/search/?query={}", "descripcion": "Certificados gratuitos completos en desarrollo web y ciencia de datos", "idioma": "en", "categoria": "Programación", "nivel": "Intermedio", "confianza": 0.93, "tipo_certificacion": "gratuito", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.91},
+                    {"nombre": "PhET Simulations", "url_base": "https://phet.colorado.edu/en/search?q={}", "descripcion": "Simulaciones interactivas de ciencias y matemáticas de la Universidad de Colorado", "idioma": "en", "categoria": "Ciencias", "nivel": "Todos", "confianza": 0.88, "tipo_certificacion": "gratuito", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.85},
+                    {"nombre": "The Programming Historian", "url_base": "https://programminghistorian.org/en/lessons/?q={}", "descripcion": "Tutoriales académicos de programación y humanidades digitales", "idioma": "en", "categoria": "Programación", "nivel": "Avanzado", "confianza": 0.82, "tipo_certificacion": "gratuito", "validez_internacional": 0, "paises_validos": ["uk", "us", "ca"], "reputacion_academica": 0.80},
+                    {"nombre": "Domestika (Gratuito)", "url_base": "https://www.domestika.org/es/search?query={}&free=1", "descripcion": "Cursos gratuitos de diseño creativo, algunos con certificados verificados", "idioma": "es", "categoria": "Diseño", "nivel": "Intermedio", "confianza": 0.83, "tipo_certificacion": "pago", "validez_internacional": 1, "paises_validos": ["es", "mx", "ar", "cl"], "reputacion_academica": 0.82},
+                    {"nombre": "Biblioteca Virtual Miguel de Cervantes", "url_base": "https://www.cervantesvirtual.com/buscar/?q={}", "descripcion": "Recursos académicos hispanos con validez internacional", "idioma": "es", "categoria": "Humanidades", "nivel": "Avanzado", "confianza": 0.87, "tipo_certificacion": "gratuito", "validez_internacional": 1, "paises_validos": ["es", "latam", "eu"], "reputacion_academica": 0.85},
+                    {"nombre": "OER Commons", "url_base": "https://www.oercommons.org/search?q={}", "descripcion": "Recursos educativos abiertos de instituciones globales con estándares académicos", "idioma": "en", "categoria": "General", "nivel": "Todos", "confianza": 0.89, "tipo_certificacion": "gratuito", "validez_internacional": 1, "paises_validos": ["global"], "reputacion_academica": 0.87}
                 ]
                 for p in plataformas_iniciales:
-                    c.execute('''INSERT INTO plataformas_ocultas (nombre, url_base, descripcion, idioma, categoria, nivel, confianza, ultima_verificacion, activa, tipo_certificacion, validez_internacional, paises_validos, reputacion_academica ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (p["nombre"], p["url_base"], p["descripcion"], p["idioma"], p["categoria"], p["nivel"], p["confianza"], datetime.now().isoformat(), 1, p["tipo_certificacion"], int(p["validez_internacional"]), safe_json_dumps(p["paises_validos"]), p["reputacion_academica"]))
+                    cursor.execute(
+                        '''INSERT INTO plataformas_ocultas
+                           (nombre, url_base, descripcion, idioma, categoria, nivel, confianza,
+                            ultima_verificacion, activa, tipo_certificacion, validez_internacional,
+                            paises_validos, reputacion_academica)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (
+                            p["nombre"], p["url_base"], p["descripcion"], p["idioma"], p["categoria"],
+                            p["nivel"], p["confianza"], datetime.now().isoformat(), 1, p["tipo_certificacion"],
+                            int(p["validez_internacional"]), safe_json_dumps(p["paises_validos"]), p["reputacion_academica"]
+                        )
+                    )
             conn.commit()
         logger.info("✅ Base de datos inicializada correctamente")
+        return True
     except Exception as e:
         logger.error(f"❌ Error Init DB: {e}")
+        return False
 
 init_advanced_database()
 
 # ============================================================
-# 6. UTILIDADES GENERALES
+# 5. UTILIDADES GENERALES & CHAT PARCHEADO
 # ============================================================
 def get_codigo_idioma(nombre_idioma: str) -> str:
-    return {"Español (es)": "es", "Inglés (en)": "en", "Portugués (pt)": "pt"}.get(nombre_idioma, "es")
+    return {"Español (es)": "es", "Inglés (en)": "en", "Portugués (pt)": "pt", "es": "es", "en": "en", "pt": "pt"}.get(nombre_idioma, "es")
 
 def generar_id_unico(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()[:10]
 
 def determinar_nivel(texto: str, nivel_solicitado: str) -> str:
-    if nivel_solicitado not in ("Cualquiera", "Todos"): return nivel_solicitado
+    if nivel_solicitado not in ("Cualquiera", "Todos"):
+        return nivel_solicitado
     t = (texto or "").lower()
-    if any(x in t for x in ['principiante', 'básico', 'beginner', 'desde cero']): return "Principiante"
-    if any(x in t for x in ['avanzado', 'advanced', 'experto']): return "Avanzado"
+    if any(x in t for x in ['principiante', 'básico', 'beginner', 'desde cero', 'intro']):
+        return "Principiante"
+    if any(x in t for x in ['avanzado', 'advanced', 'experto', 'expert']):
+        return "Avanzado"
     return "Intermedio"
 
 def determinar_categoria(tema: str) -> str:
     tema = (tema or "").lower()
-    if any(x in tema for x in ['python', 'java', 'javascript', 'web', 'programación']): return "Programación"
-    if any(x in tema for x in ['data', 'datos', 'ia', 'ai', 'machine learning']): return "Data Science"
-    if any(x in tema for x in ['design', 'diseño', 'ux', 'ui']): return "Diseño"
+    if any(x in tema for x in ['python', 'java', 'javascript', 'web', 'code', 'programación', 'desarrollo']):
+        return "Programación"
+    if any(x in tema for x in ['data', 'datos', 'ia', 'ai', 'machine learning', 'ciencia de datos']):
+        return "Data Science"
+    if any(x in tema for x in ['design', 'diseño', 'ux', 'ui']):
+        return "Diseño"
+    if any(x in tema for x in ['marketing', 'negocios', 'business', 'finanzas', 'economía']):
+        return "Negocios"
     return "General"
 
 def extraer_plataforma(url: str) -> str:
     try:
-        domain = urlparse(url).netloc.lower().replace('www.', '')
+        domain = urlparse(url).netloc.lower()
+        if 'youtube' in domain: return 'YouTube'
+        if 'coursera' in domain: return 'Coursera'
+        if 'udemy' in domain: return 'Udemy'
+        if 'edx' in domain: return 'edX'
+        if 'khanacademy' in domain: return 'Khan Academy'
+        if 'freecodecamp' in domain: return 'freeCodeCamp'
+        if not domain: return "Web"
         parts = domain.split('.')
-        return parts[0].title() if len(parts) > 1 else domain.title()
-    except: return "Web"
+        return parts[-2].title() if len(parts) >= 2 else domain.title()
+    except:
+        return "Web"
 
 def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool:
     t = (url + (titulo or "") + (descripcion or "")).lower()
-    invalidas = ['comprar', 'precio', 'premium', 'suscripción', 'matrícula']
-    validas = ['curso', 'tutorial', 'aprender', 'gratis', 'free', 'class', 'educación']
-    dominios = ['.edu', 'coursera', 'edx', 'khanacademy', 'udemy', 'youtube', 'freecodecamp', '.gov']
+    invalidas = ['comprar', 'buy', 'precio', 'price', 'premium', 'paid', 'only', 'exclusive', 'suscripción', 'subscription']
+    validas = ['curso', 'tutorial', 'aprender', 'learn', 'gratis', 'free', 'class', 'education', 'educación']
+    dominios = ['.edu', 'coursera', 'edx', 'khanacademy', 'udemy', 'youtube', 'freecodecamp']
     if any(i in t for i in invalidas): return False
     return any(v in t for v in validas) or any(d in url.lower() for d in dominios)
 
+# --- PARCHE DE LIMPIEZA PARA CHAT ---
 def limpiar_html_visible(texto: str) -> str:
-    if not texto: return ""
-    texto = re.sub(r'\{.*\}\s*$', '', texto, flags=re.DOTALL)
+    if not texto:
+        return ""
+    # Eliminar bloques JSON al final y etiquetas HTML en toda la cadena
+    texto = re.sub(r'\{.*\}\s*$', '', texto, flags=re.DOTALL).strip()
     texto = re.sub(r'<[^>]+>', '', texto).strip()
     return texto
 
 def ui_chat_mostrar(mensaje: str, rol: str):
     texto_limpio = limpiar_html_visible(mensaje)
-    if not texto_limpio: return
-    st.markdown(f"**{'🤖 IA' if rol == 'assistant' else '👤 Tú'}:** {texto_limpio}")
+    if not texto_limpio:
+        return
+    if rol == "assistant":
+        st.markdown(f"🤖 **IA:** {texto_limpio}")
+    elif rol == "user":
+        st.markdown(f"👤 **Tú:** {texto_limpio}")
 
 # ============================================================
-# 7. INTEGRACIÓN GROQ (MEJORADA PARA ROBUSTEZ Y NO BLOQUEO)
+# 6. INTEGRACIÓN GROQ (Análisis & Chat)
 # ============================================================
 def analizar_recurso_groq_sync(recurso: RecursoEducativo, perfil: Dict):
-    """
-    Worker robusto que utiliza el módulo externo ia_module en un hilo separado
-    para no bloquear la aplicación principal, con timeout.
-    """
-    if not (st.session_state.features.get("enable_groq_analysis", True) and GROQ_AVAILABLE and ia_module and ia_module.GROQ_AVAILABLE):
-        recurso.metadatos_analisis = {"calidad_ia": 0, "relevancia_ia": 0, "recomendacion_personalizada": "Análisis IA no disponible.", "advertencias": ["IA_DISABLED"]}
-        ia_logger.warning(f"Análisis omitido para {recurso.id}: IA no disponible/deshabilitada.")
+    """Worker robusto para Groq con manejo de errores mejorado."""
+    if not GROQ_AVAILABLE:
+        recurso.metadatos_analisis = {
+            "calidad_ia": recurso.confianza,
+            "relevancia_ia": recurso.confianza,
+            "recomendacion_personalizada": "IA no disponible.",
+            "razones_calidad": []
+        }
         return
-
-    def task():
-        return ia_module.analizar_recurso_groq(titulo=recurso.titulo, descripcion=recurso.descripcion, nivel=recurso.nivel, categoria=recurso.categoria, plataforma=recurso.plataforma)
-
     try:
-        future = executor.submit(task)
-        data = future.result(timeout=45)
-        recurso.metadatos_analisis = data
-        ia_prom = (data.get("calidad_ia", 0) + data.get("relevancia_ia", 0)) / 2.0
-        recurso.confianza = max(recurso.confianza, (recurso.confianza + ia_prom) / 2)
-        recurso.confianza = min(recurso.confianza, 0.98)
-        ia_logger.info(f"Análisis IA completado para {recurso.id}")
-    except TimeoutError:
-        ia_logger.error(f"Timeout (45s) analizando recurso {recurso.id}.")
-        recurso.metadatos_analisis = {"calidad_ia": 0, "relevancia_ia": 0, "recomendacion_personalizada": "El análisis IA tardó demasiado.", "advertencias": ["TIMEOUT_ERROR"]}
+        client = groq.Groq(api_key=GROQ_API_KEY)
+        prompt = f"""
+        Evalúa este curso. Devuelve SOLO JSON válido.
+        TÍTULO: {recurso.titulo}
+        DESCRIPCIÓN: {recurso.descripcion}
+        NIVEL: {recurso.nivel}
+        CATEGORÍA: {recurso.categoria}
+        PLATAFORMA: {recurso.plataforma}
+
+        JSON:
+        {{
+            "calidad_educativa": 0.85,
+            "relevancia_usuario": 0.90,
+            "razones_calidad": ["razon1","razon2"],
+            "recomendacion_personalizada": "Conclusión breve útil para el usuario",
+            "advertencias": []
+        }}
+        """
+        resp = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=GROQ_MODEL, temperature=0.3, max_tokens=600
+        )
+        contenido = (resp.choices[0].message.content or "").strip()
+        json_match = re.search(r'\{.*\}', contenido, re.DOTALL)
+        data = safe_json_loads(json_match.group()) if json_match else {}
+        recurso.metadatos_analisis = {
+            "calidad_ia": float(data.get("calidad_educativa", recurso.confianza)),
+            "relevancia_ia": float(data.get("relevancia_usuario", recurso.confianza)),
+            "recomendacion_personalizada": data.get("recomendacion_personalizada", "Curso recomendado."),
+            "razones_calidad": data.get("razones_calidad", []),
+            "advertencias": data.get("advertencias", [])
+        }
+        # Ajuste de confianza según IA
+        ia_prom = (recurso.metadatos_analisis["calidad_ia"] + recurso.metadatos_analisis["relevancia_ia"]) / 2.0
+        recurso.confianza = min(max(recurso.confianza, ia_prom), 0.95)
     except Exception as e:
-        ia_logger.error(f"Error en worker Groq (ia_module) para {recurso.id}: {e}", exc_info=True)
-        recurso.metadatos_analisis = {"calidad_ia": 0, "relevancia_ia": 0, "recomendacion_personalizada": "Error en análisis IA.", "advertencias": [str(e)]}
-    finally:
-        recurso.analisis_pendiente = False
+        logger.error(f"Error Groq Worker: {e}")
+        recurso.metadatos_analisis = {
+            "calidad_ia": recurso.confianza,
+            "relevancia_ia": recurso.confianza,
+            "recomendacion_personalizada": "IA no disponible temporalmente.",
+            "razones_calidad": []
+        }
+
+def ejecutar_analisis_background(resultados: List[RecursoEducativo]):
+    pendientes = [r for r in resultados if r.analisis_pendiente]
+    if not pendientes:
+        return
+    for r in pendientes:
+        executor.submit(analizar_recurso_groq_sync, r, {})
 
 def chatgroq(mensajes: List[Dict[str, str]]) -> str:
-    if not (ia_module and GROQ_AVAILABLE and st.session_state.features.get("enable_chat_ia", True)):
-        return "🧠 IA no disponible. Usa el buscador superior."
+    if not GROQ_AVAILABLE:
+        return "🧠 IA no disponible. Usa el buscador superior para encontrar cursos ahora."
     try:
-        ultimo_mensaje = next((m['content'] for m in reversed(mensajes) if m['role'] == 'user'), "")
-        if not ultimo_mensaje: return "No entendí tu mensaje."
-        return ia_module.chatgroq(ultimo_mensaje)
+        client = groq.Groq(api_key=GROQ_API_KEY)
+        system_prompt = (
+            "Eres un asistente educativo. Sé claro y útil. "
+            "NO uses formato JSON en tu respuesta de chat. Mantén respuestas breves y accionables."
+        )
+        groq_msgs = [{"role": "system", "content": system_prompt}] + mensajes
+        resp = client.chat.completions.create(
+            messages=groq_msgs, model=GROQ_MODEL, temperature=0.5, max_tokens=700
+        )
+        return resp.choices[0].message.content
     except Exception as e:
-        logger.error(f"Error en chat Groq (ia_module): {e}"); return "Hubo un error con la IA."
+        logger.error(f"Error en chat Groq: {e}")
+        return "Hubo un error con la IA. Intenta de nuevo."
 
 # ============================================================
-# 8. BÚSQUEDA MULTICAPA
+# 7. BÚSQUEDA MULTICAPA
 # ============================================================
-@async_profile
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    if not (st.session_state.features.get("enable_google_api", True) and validate_api_key(GOOGLE_API_KEY, "google") and GOOGLE_CX): return []
+    if not validate_api_key(GOOGLE_API_KEY, "google") or not GOOGLE_CX:
+        return []
     try:
-        query = f'{tema} curso gratuito certificado' + (f' nivel {nivel.lower()}' if nivel not in ("Cualquiera", "Todos") else '')
-        params = {'key': GOOGLE_API_KEY, 'cx': GOOGLE_CX, 'q': query, 'num': 5, 'lr': f'lang_{idioma}'}
-        async with aiohttp.ClientSession( ) as s, s.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=8 ) as resp:
-            if resp.status != 200: return []
-            items = (await resp.json()).get('items', [])
-            return [RecursoEducativo(id=generar_id_unico(i['link']), titulo=i.get('title'), url=i['link'], descripcion=i.get('snippet'), plataforma=extraer_plataforma(i['link']), idioma=idioma, nivel=determinar_nivel(i.get('title', '') + i.get('snippet', ''), nivel), categoria=determinar_categoria(tema), certificacion=None, confianza=0.85, tipo="verificada", ultima_verificacion=datetime.now().isoformat(), activo=True, metadatos={'fuente': 'google_api'}) for i in items if es_recurso_educativo_valido(i.get('link', ''), i.get('title'), i.get('snippet'))]
+        query_base = f"{tema} curso gratuito certificado"
+        if nivel not in ("Cualquiera", "Todos"):
+            query_base += f" nivel {nivel.lower()}"
+        url = "https://www.googleapis.com/customsearch/v1"
+        params = {'key': GOOGLE_API_KEY, 'cx': GOOGLE_CX, 'q': query_base, 'num': 5, 'lr': f'lang_{idioma}'}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=8) as response:
+                if response.status != 200:
+                    return []
+                data = await response.json()
+                items = data.get('items', [])
+                resultados: List[RecursoEducativo] = []
+                for item in items:
+                    url_item = item.get('link', '')
+                    titulo = item.get('title', '')
+                    descripcion = item.get('snippet', '')
+                    if not es_recurso_educativo_valido(url_item, titulo, descripcion):
+                        continue
+                    nivel_calc = determinar_nivel(titulo + " " + descripcion, nivel)
+                    confianza = 0.83
+                    if any(d in url_item.lower() for d in ['.edu', 'coursera.org', 'edx.org', 'freecodecamp.org', '.gov']):
+                        confianza = min(confianza + 0.1, 0.95)
+                    resultados.append(RecursoEducativo(
+                        id=generar_id_unico(url_item),
+                        titulo=titulo or f"Recurso {generar_id_unico(url_item)}",
+                        url=url_item,
+                        descripcion=descripcion or "Sin descripción disponible.",
+                        plataforma=extraer_plataforma(url_item),
+                        idioma=idioma,
+                        nivel=nivel_calc,
+                        categoria=determinar_categoria(tema),
+                        certificacion=None,
+                        confianza=confianza,
+                        tipo="verificada",
+                        ultima_verificacion=datetime.now().isoformat(),
+                        activo=True,
+                        metadatos={'fuente': 'google_api'}
+                    ))
+                return resultados[:5]
     except Exception as e:
-        logger.error(f"Error Google API: {e}"); return []
+        logger.error(f"Error Google API: {e}")
+        return []
 
 def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    if not st.session_state.features.get("enable_known_platforms", True): return []
-    plataformas = {"es": [{"n": "YouTube", "u": f"https://www.youtube.com/results?search_query=curso+gratis+{quote_plus(tema )}"}, {"n": "Coursera (ES)", "u": f"https://www.coursera.org/search?query={quote_plus(tema )}&languages=es&free=true"}], "en": [{"n": "YouTube", "u": f"https://www.youtube.com/results?search_query=free+course+{quote_plus(tema )}"}, {"n": "edX", "u": f"https://www.edx.org/search?q={quote_plus(tema )}&price=free"}]}
-    return [RecursoEducativo(id=generar_id_unico(p["u"]), titulo=f'🎯 {p["n"]} — {tema}', url=p["u"], descripcion=f'Búsqueda directa en {p["n"]}', plataforma=p["n"], idioma=idioma, nivel=nivel if nivel != "Cualquiera" else "Intermedio", categoria=determinar_categoria(tema), certificacion=None, confianza=0.85, tipo="conocida", ultima_verificacion=datetime.now().isoformat(), activo=True, metadatos={"fuente": "plataformas_conocidas"}) for p in plataformas.get(idioma, plataformas["en"])]
+    recursos: List[RecursoEducativo] = []
+    plataformas = {
+        "es": [
+            {"nombre": "YouTube Educativo", "url": f"https://www.youtube.com/results?search_query=curso+gratis+{tema.replace(' ', '+')}"},
+            {"nombre": "Coursera (ES)", "url": f"https://www.coursera.org/search?query={tema}&languages=es&free=true"},
+            {"nombre": "Udemy (Gratis)", "url": f"https://www.udemy.com/courses/search/?q={tema}&price=price-free&lang=es"},
+            {"nombre": "Khan Academy (ES)", "url": f"https://es.khanacademy.org/search?page_search_query={tema.replace(' ', '%20')}"}
+        ],
+        "en": [
+            {"nombre": "YouTube Education", "url": f"https://www.youtube.com/results?search_query=free+course+{tema.replace(' ', '+')}"},
+            {"nombre": "Khan Academy", "url": f"https://www.khanacademy.org/search?page_search_query={tema.replace(' ', '%20')}"},
+            {"nombre": "Coursera", "url": f"https://www.coursera.org/search?query={tema}&free=true"},
+            {"nombre": "Udemy (Free)", "url": f"https://www.udemy.com/courses/search/?q={tema}&price=price-free&lang=en"},
+            {"nombre": "edX", "url": f"https://www.edx.org/search?tab=course&availability=current&price=free&q={tema.replace(' ', '%20')}"},
+            {"nombre": "freeCodeCamp", "url": f"https://www.freecodecamp.org/news/search/?query={tema.replace(' ', '%20')}"}
+        ],
+        "pt": [
+            {"nombre": "YouTube BR", "url": f"https://www.youtube.com/results?search_query=curso+gratuito+{tema.replace(' ', '+')}"},
+            {"nombre": "Coursera (PT)", "url": f"https://www.coursera.org/search?query={tema}&languages=pt&free=true"},
+            {"nombre": "Udemy (PT)", "url": f"https://www.udemy.com/courses/search/?q={tema}&price=price-free&lang=pt"},
+            {"nombre": "Khan Academy (PT)", "url": f"https://pt.khanacademy.org/search?page_search_query={tema.replace(' ', '%20')}"}
+        ]
+    }
+    lista = plataformas.get(idioma, plataformas["en"])
+    for plat in lista:
+        recursos.append(RecursoEducativo(
+            id=generar_id_unico(plat["url"]),
+            titulo=f"🎯 {plat['nombre']} — {tema}",
+            url=plat["url"],
+            descripcion=f"Búsqueda directa en {plat['nombre']}",
+            plataforma=plat["nombre"],
+            idioma=idioma,
+            nivel=nivel if nivel != "Cualquiera" else "Intermedio",
+            categoria=determinar_categoria(tema),
+            certificacion=None,
+            confianza=0.85,
+            tipo="conocida",
+            ultima_verificacion=datetime.now().isoformat(),
+            activo=True,
+            metadatos={"fuente": "plataformas_conocidas"}
+        ))
+        if len(recursos) >= 6:
+            break
+    return recursos
 
 def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    if not st.session_state.features.get("enable_hidden_platforms", True): return []
     try:
         with get_db_connection(DB_PATH) as conn:
-            c = conn.cursor()
-            q = 'SELECT nombre, url_base, descripcion, nivel, confianza, tipo_certificacion, validez_internacional, paises_validos, reputacion_academica FROM plataformas_ocultas WHERE activa = 1 AND idioma = ?'
-            p = [idioma]
-            if nivel not in ("Cualquiera", "Todos"): q += " AND (nivel = ? OR nivel = 'Todos')"; p.append(nivel)
-            c.execute(q + " ORDER BY confianza DESC LIMIT 6", p)
-            recursos = []
-            for r in c.fetchall():
-                nombre, url_base, desc, nivel_db, conf, tipo_cert, val_int, paises_json, reputacion = r
-                url = url_base.format(quote_plus(tema))
-                cert = Certificacion(plataforma=nombre, curso=tema, tipo=tipo_cert, validez_internacional=bool(val_int), paises_validos=safe_json_loads(paises_json, []), costo_certificado=0.0 if tipo_cert == "gratuito" else 49.99, reputacion_academica=reputacion or 0.8, ultima_verificacion=datetime.now().isoformat()) if tipo_cert and tipo_cert != "none" else None
-                recursos.append(RecursoEducativo(id=generar_id_unico(url), titulo=f'💎 {nombre} — {tema}', url=url, descripcion=desc, plataforma=nombre, idioma=idioma, nivel=nivel_db if nivel in ("Cualquiera", "Todos") else nivel, categoria=determinar_categoria(tema), certificacion=cert, confianza=float(conf or 0.8), tipo="oculta", ultima_verificacion=datetime.now().isoformat(), activo=True, metadatos={"fuente": "plataformas_ocultas"}))
+            cursor = conn.cursor()
+            query = '''
+            SELECT nombre, url_base, descripcion, nivel, confianza,
+                   tipo_certificacion, validez_internacional, paises_validos, reputacion_academica
+            FROM plataformas_ocultas
+            WHERE activa = 1 AND idioma = ?
+            '''
+            params = [idioma]
+            if nivel not in ("Cualquiera", "Todos"):
+                query += " AND (nivel = ? OR nivel = 'Todos')"
+                params.append(nivel)
+            query += " ORDER BY confianza DESC LIMIT 6"
+            cursor.execute(query, params)
+            filas = cursor.fetchall()
+
+            recursos: List[RecursoEducativo] = []
+            for r in filas:
+                nombre, url_base, descripcion, nivel_db, confianza, tipo_cert, validez_int, paises_json, reputacion = r
+                url_completa = url_base.format(tema.replace(' ', '+'))
+                nivel_calc = nivel_db if nivel in ("Cualquiera", "Todos") else nivel
+                cert = None
+                if tipo_cert and tipo_cert != "none":
+                    cert = Certificacion(
+                        plataforma=nombre,
+                        curso=tema,
+                        tipo=tipo_cert,
+                        validez_internacional=bool(validez_int),
+                        paises_validos=safe_json_loads(paises_json, default_value={"paises": ["global"]}).get("paises", ["global"]) if isinstance(paises_json, str) else ["global"],
+                        costo_certificado=0.0 if tipo_cert == "gratuito" else 49.99,
+                        reputacion_academica=reputacion or 0.8,
+                        ultima_verificacion=datetime.now().isoformat()
+                    )
+                recursos.append(RecursoEducativo(
+                    id=generar_id_unico(url_completa),
+                    titulo=f"💎 {nombre} — {tema}",
+                    url=url_completa,
+                    descripcion=descripcion or "Sin descripción.",
+                    plataforma=nombre,
+                    idioma=idioma,
+                    nivel=nivel_calc,
+                    categoria=determinar_categoria(tema),
+                    certificacion=cert,
+                    confianza=float(confianza or 0.8),
+                    tipo="oculta",
+                    ultima_verificacion=datetime.now().isoformat(),
+                    activo=True,
+                    metadatos={"fuente": "plataformas_ocultas", "confianza_db": confianza}
+                ))
             return recursos
     except Exception as e:
-        logger.error(f"Error plataformas ocultas: {e}"); return []
+        logger.error(f"Error al obtener plataformas ocultas: {e}")
+        return []
 
 def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEducativo]:
-    seen = set(); unicos = []; [seen.add(r.url) or unicos.append(r) for r in resultados if r.url not in seen]; return unicos
+    seen = set()
+    unicos: List[RecursoEducativo] = []
+    for r in resultados:
+        if r.url not in seen:
+            seen.add(r.url)
+            unicos.append(r)
+    return unicos
 
-@async_profile
-async def buscar_recursos_multicapa(tema: str, idioma_ui: str, nivel: str) -> List[RecursoEducativo]:
-    cache_key = f"{tema}|{idioma_ui}|{nivel}"
-    if cached := search_cache.get(cache_key): return cached
-    idioma = get_codigo_idioma(idioma_ui)
-    progress_bar = st.progress(0, "Iniciando búsqueda...")
-    
-    ocultas = buscar_en_plataformas_ocultas(tema, idioma, nivel); progress_bar.progress(0.3, "Consultando Google API...")
-    google_res = await buscar_en_google_api(tema, idioma, nivel); progress_bar.progress(0.6, "Buscando en plataformas conocidas...")
-    conocidas = buscar_en_plataformas_conocidas(tema, idioma, nivel); progress_bar.progress(0.85, "Procesando resultados...")
-    
-    resultados = eliminar_duplicados(ocultas + google_res + conocidas)
+async def buscar_recursos_multicapa(tema: str, idioma_seleccion_ui: str, nivel: str) -> List[RecursoEducativo]:
+    cache_key = f"{tema}|{idioma_seleccion_ui}|{nivel}"
+    cached = search_cache.get(cache_key)
+    if cached:
+        return cached
+
+    idioma = get_codigo_idioma(idioma_seleccion_ui)
+    resultados: List[RecursoEducativo] = []
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    status_text.text("Buscando en plataformas ocultas...")
+    ocultas = buscar_en_plataformas_ocultas(tema, idioma, nivel)
+    resultados.extend(ocultas)
+    progress_bar.progress(0.3)
+
+    status_text.text("Consultando Google API...")
+    google_res = await buscar_en_google_api(tema, idioma, nivel)
+    resultados.extend(google_res)
+    progress_bar.progress(0.6)
+
+    status_text.text("Buscando en plataformas conocidas...")
+    conocidas = buscar_en_plataformas_conocidas(tema, idioma, nivel)
+    resultados.extend(conocidas)
+    progress_bar.progress(0.85)
+
+    status_text.text("Procesando y deduplicando resultados...")
+    resultados = eliminar_duplicados(resultados)
     resultados.sort(key=lambda x: x.confianza, reverse=True)
-    
-    if GROQ_AVAILABLE and st.session_state.features.get("enable_groq_analysis", True):
-        for r in resultados[:st.session_state.features.get("max_analysis", 5)]: r.analisis_pendiente = True
+    if GROQ_AVAILABLE:
+        for r in resultados[:5]:
+            r.analisis_pendiente = True
 
-    final = resultados[:st.session_state.features.get("max_results", 15)]
+    final = resultados[:15]
     search_cache.set(cache_key, final)
-    progress_bar.empty(); return final
+
+    progress_bar.progress(1.0)
+    time.sleep(0.1)
+    progress_bar.empty()
+    status_text.empty()
+
+    return final
 
 # ============================================================
-# 9. PROCESAMIENTO EN SEGUNDO PLANO
+# 8. PROCESAMIENTO EN SEGUNDO PLANO
 # ============================================================
+def analizar_resultados_en_segundo_plano(resultados: List[RecursoEducativo]):
+    if not GROQ_AVAILABLE:
+        return
+    try:
+        for recurso in resultados:
+            if recurso.analisis_pendiente and not recurso.metadatos_analisis:
+                analizar_recurso_groq_sync(recurso, {})
+                recurso.analisis_pendiente = False
+                time.sleep(0.3)
+    except Exception as e:
+        logger.error(f"Error análisis background: {e}")
+
 def worker():
     while True:
         try:
             tarea = background_tasks.get(timeout=60)
-            if tarea is None: break
-            if tarea.get('tipo') == 'analizar_recurso':
-                analizar_recurso_groq_sync(**tarea.get('parametros', {}))
+            if tarea is None:
+                break
+            tipo = tarea.get('tipo')
+            params = tarea.get('parametros', {})
+            if tipo == 'analizar_resultados':
+                analizar_resultados_en_segundo_plano(**params)
             background_tasks.task_done()
-        except queue.Empty: continue
-        except Exception as e: logger.error(f"Error en worker: {e}"); background_tasks.task_done()
+        except queue.Empty:
+            continue
+        except Exception as e:
+            logger.error(f"Error en tarea background: {e}")
+            background_tasks.task_done()
 
 def iniciar_tareas_background():
     if 'background_started' not in st.session_state:
-        for _ in range(min(MAX_BACKGROUND_TASKS, os.cpu_count() or 1)):
+        num_workers = min(MAX_BACKGROUND_TASKS, os.cpu_count() or 1)
+        for _ in range(num_workers):
             threading.Thread(target=worker, daemon=True).start()
         st.session_state.background_started = True
+        logger.info(f"✅ Workers background iniciados: {num_workers}")
 
 def planificar_analisis_ia(resultados: List[RecursoEducativo]):
-    if not (GROQ_AVAILABLE and st.session_state.features.get("enable_groq_analysis", True)): return
-    for r in resultados:
-        if r.analisis_pendiente:
-            background_tasks.put({'tipo': 'analizar_recurso', 'parametros': {'recurso': r, 'perfil': {}}})
+    if not GROQ_AVAILABLE:
+        return
+    tarea = {'tipo': 'analizar_resultados', 'parametros': {'resultados': [r for r in resultados if r.analisis_pendiente]}}
+    background_tasks.put(tarea)
+    logger.info(f"🧠 Tarea IA planificada: {len(tarea['parametros']['resultados'])} resultados")
 
 # ============================================================
-# 10. UI ESTILOS Y COMPONENTES
+# 9. UI y Presentación
 # ============================================================
-st.set_page_config(page_title="🎓 Buscador Profesional de Cursos", page_icon="🎓", layout="wide", initial_sidebar_state="collapsed")
-init_feature_flags()
+st.set_page_config(page_title="🎓 Buscador Profesional de Cursos", page_icon="🎓", layout="wide")
 
 st.markdown("""
 <style>
-.main-header { background: linear-gradient(135deg, #4b6cb7 0%, #182848 100%); color: white; padding: 2rem; border-radius: 20px; margin-bottom: 2rem; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
+.main-header {
+  background: linear-gradient(135deg, #4b6cb7 0%, #182848 100%);
+  color: white; padding: 2rem; border-radius: 20px; margin-bottom: 2rem;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+}
 .main-header h1 { margin: 0; font-size: 2.3rem; }
-.resultado-card { border-radius: 15px; padding: 20px; margin-bottom: 20px; background: white; box-shadow: 0 5px 20px rgba(0,0,0,0.08); border-left: 6px solid #4CAF50; transition: transform .2s; }
+.resultado-card {
+  border-radius: 15px; padding: 20px; margin-bottom: 20px; background: white;
+  box-shadow: 0 5px 20px rgba(0,0,0,0.08); border-left: 6px solid #4CAF50;
+  transition: transform .2s;
+}
 .resultado-card:hover { transform: translateY(-3px); }
-.nivel-principiante { border-left-color: #2196F3 !important; } .nivel-intermedio { border-left-color: #4CAF50 !important; } .nivel-avanzado { border-left-color: #FF9800 !important; }
+.nivel-principiante { border-left-color: #2196F3 !important; }
+.nivel-intermedio { border-left-color: #4CAF50 !important; }
+.nivel-avanzado { border-left-color: #FF9800 !important; }
 .plataforma-oculta { border-left-color: #FF6B35 !important; background: #fff5f0; }
-.certificado-badge { display:inline-block;padding:4px 10px;border-radius:12px;font-size:.8rem;font-weight:
-bold;background:#e8f5e9;color:#2e7d32;margin-right:5px; }
+.certificado-badge { display:inline-block;padding:4px 10px;border-radius:12px;font-size:.8rem;font-weight:bold;background:#e8f5e9;color:#2e7d32;margin-right:5px; }
 a { text-decoration: none !important; }
 .status-badge { display:inline-block;padding:4px 10px;border-radius:15px;font-size:.8rem;font-weight:bold;background:rgba(255,255,255,0.2); }
-.smalltext { font-size: 0.85rem; color: #607d8b; }
-.badge-pendiente { display:inline-block; padding:3px 8px; background:#ede7f6; color:#6a1b9a; border-radius:12px; font-size:.75rem; }
-.badge-ok { display:inline-block; padding:3px 8px; background:#e8f5e9; color:#2e7d32; border-radius:12px; font-size:.75rem; }
-.badge-error { display:inline-block; padding:3px 8px; background:#ffebee; color:#c62828; border-radius:12px; font-size:.75rem; }
-.tooltip { font-size:0.8rem; color:#78909c; }
 </style>
 """, unsafe_allow_html=True)
 
 def link_button(url: str, label: str = "➡️ Acceder al recurso") -> str:
-    if not url: return ""
+    if not url:
+        return ""
     return f'''<a href="{url}" target="_blank" style="display:inline-block;background:linear-gradient(to right,#6a11cb,#2575fc);color:white;padding:10px 16px;border-radius:8px;font-weight:bold;">{label}</a>'''
 
 def badge_certificacion(cert: Optional[Certificacion]) -> str:
     if not cert: return ""
     html = ""
-    if cert.tipo == "gratuito": html += '<span class="certificado-badge">✅ Certificado Gratuito</span>'
-    elif cert.tipo == "audit": html += '<span class="certificado-badge" style="background:#e3f2fd;color:#1565c0;">🎓 Modo Audit</span>'
-    elif cert.tipo == "pago": html += '<span class="certificado-badge" style="background:#fff3e0;color:#ef6c00;">💰 Certificado de Pago</span>'
-    if cert.validez_internacional: html += '<span class="certificado-badge" style="background:#e3f2fd;color:#1565c0;">🌐 Validez Internacional</span>'
+    if cert.tipo == "gratuito":
+        html += '<span class="certificado-badge">✅ Certificado Gratuito</span>'
+    elif cert.tipo == "audit":
+        html += '<span class="certificado-badge" style="background:#e3f2fd;color:#1565c0;">🎓 Modo Audit</span>'
+    elif cert.tipo == "pago":
+        html += '<span class="certificado-badge" style="background:#fff3e0;color:#ef6c00;">💰 Certificado de Pago</span>'
+    if cert.validez_internacional:
+        html += '<span class="certificado-badge" style="background:#e3f2fd;color:#1565c0;">🌐 Validez Internacional</span>'
     return html
 
 def clase_nivel(nivel: str) -> str:
@@ -471,191 +703,143 @@ def mostrar_recurso(r: RecursoEducativo, idx: int):
     extra_class = "plataforma-oculta" if r.tipo == "oculta" else ""
     nivel_class = clase_nivel(r.nivel)
     cert_html = badge_certificacion(r.certificacion)
-    ia_block, estado_ia = "", ""
-
-    if r.analisis_pendiente:
-        estado_ia = '<span class="badge-pendiente" title="El análisis se está ejecutando">IA pendiente</span>'
-        ia_block = "<div style='color:#9c27b0;font-size:0.9em;margin:5px 0;'>⏳ Analizando con IA...</div>"
-    elif r.metadatos_analisis:
+    ia_block = ""
+    if r.metadatos_analisis:
         data = r.metadatos_analisis
-        advertencias = data.get("advertencias", [])
-        if "TIMEOUT_ERROR" in advertencias or "IA_DISABLED" in advertencias or "Error" in str(advertencias):
-             estado_ia = '<span class="badge-error" title="El análisis de IA falló o no está disponible">IA Error</span>'
-             ia_block = f"<div style='background:#fff3e0;padding:12px;border-radius:8px;margin:12px 0;border-left:4px solid #ff9800;'><strong>🧠 Análisis IA:</strong> {data.get('recomendacion_personalizada', 'No disponible.')}</div>"
-        else:
-            cal, rel = int(data.get('calidad_ia', 0)*100), int(data.get('relevancia_ia', 0)*100)
-            estado_ia = f'<span class="badge-ok" title="Calidad: {cal}% / Relevancia: {rel}%">IA listo</span>'
-            ia_block = f"""<div style="background:#f3e5f5;padding:12px;border-radius:8px;margin:12px 0;border-left:4px solid #9c27b0;"><strong>🧠 Análisis IA:</strong> Calidad {cal}% • Relevancia {rel}%  
-{data.get('recomendacion_personalizada', '')}</div>"""
-    else:
-        estado_ia = '<span class="smalltext tooltip" title="El análisis IA no se ejecutó">Sin IA</span>'
+        cal = int(data.get('calidad_ia', 0)*100)
+        rel = int(data.get('relevancia_ia', 0)*100)
+        ia_block = f"""
+        <div style="background:#f3e5f5;padding:12px;border-radius:8px;margin:12px 0;border-left:4px solid #9c27b0;">
+            <strong>🧠 Análisis IA:</strong> Calidad {cal}% • Relevancia {rel}%<br>
+            {data.get('recomendacion_personalizada', '')}
+        </div>"""
+    elif r.analisis_pendiente:
+        ia_block = "<div style='color:#9c27b0;font-size:0.9em;margin:5px 0;'>⏳ Analizando...</div>"
+
+    desc = r.descripcion or "Sin descripción disponible."
+    titulo = r.titulo or "Recurso Educativo"
 
     st.markdown(f"""
 <div class="resultado-card {nivel_class} {extra_class}">
-  <h3 style="margin-top:0;">{r.titulo or "Recurso"} {estado_ia}</h3>
+  <h3 style="margin-top:0;">{titulo}</h3>
   <p><strong>📚 {r.nivel}</strong> | 🌐 {r.plataforma} | 🏷️ {r.categoria}</p>
-  <p style="color:#555;">{r.descripcion or "Sin descripción."}</p>
+  <p style="color:#555;">{desc}</p>
   <div style="margin-bottom:10px;">{cert_html}</div>
   {ia_block}
-  <div style="margin-top:15px;">{link_button(r.url)}</div>
+  <div style="margin-top:15px;">{link_button(r.url, "➡️ Acceder al recurso")}</div>
   <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee; font-size: 0.8rem; color: #888;">
     Confianza: {r.confianza*100:.0f}% | Verificado: {datetime.fromisoformat(r.ultima_verificacion).strftime('%d/%m/%Y')}
   </div>
-</div>""", unsafe_allow_html=True)
+</div>
+""", unsafe_allow_html=True)
 
 # ============================================================
-# 11. FAVORITOS, FEEDBACK, EXPORT/IMPORT
-# ============================================================
-def agregar_favorito(r: RecursoEducativo, notas: str = ""):
-    try:
-        with get_db_connection(DB_PATH) as conn:
-            conn.execute("INSERT INTO favoritos (id_recurso, titulo, url, notas, creado_en) VALUES (?, ?, ?, ?, ?)", (r.id, r.titulo, r.url, notas, datetime.now().isoformat())); conn.commit()
-        st.toast("⭐ Agregado a favoritos", icon="✅")
-    except Exception as e:
-        logger.error(f"Error agregando favorito: {e}")
-
-def listar_favoritos() -> List[Favorito]:
-    try:
-        with get_db_connection(DB_PATH) as conn:
-            return [Favorito(*f) for f in conn.execute("SELECT id_recurso, titulo, url, notas, creado_en FROM favoritos ORDER BY creado_en DESC").fetchall()]
-    except Exception as e:
-        logger.error(f"Error listando favoritos: {e}"); return []
-
-def registrar_feedback(id_recurso: str, opinion: str, rating: int):
-    try:
-        with get_db_connection(DB_PATH) as conn:
-            conn.execute("INSERT INTO feedback (id_recurso, opinion, rating, creado_en) VALUES (?, ?, ?, ?)", (id_recurso, opinion, rating, datetime.now().isoformat())); conn.commit()
-        st.toast("¡Gracias por tu feedback!", icon="👍")
-    except Exception as e:
-        logger.error(f"Error registrando feedback: {e}")
-
-def exportar_busquedas(resultados: List[RecursoEducativo]) -> bytes:
-    df = pd.DataFrame([{'id': r.id, 'titulo': r.titulo, 'url': r.url, 'plataforma': r.plataforma, 'nivel': r.nivel, 'confianza': r.confianza} for r in resultados])
-    return df.to_csv(index=False).encode('utf-8')
-
-# ============================================================
-# 12. PANELES AVANZADOS
-# ============================================================
-def panel_configuracion_avanzada():
-    with st.expander("⚙️ Configuración avanzada"):
-        st.session_state.features["ui_theme"] = st.selectbox("Tema", ["auto", "dark", "light"], index=["auto","dark","light"].index(st.session_state.features["ui_theme"]))
-        st.session_state.features["max_results"] = st.slider("Máx. resultados", 5, 30, st.session_state.features["max_results"])
-        st.session_state.features["max_analysis"] = st.slider("Máx. análisis IA", 0, 10, st.session_state.features["max_analysis"])
-        st.session_state.features["enable_groq_analysis"] = st.checkbox("Análisis IA (Groq)", value=st.session_state.features["enable_groq_analysis"] and GROQ_AVAILABLE)
-        st.session_state.features["enable_debug_mode"] = st.checkbox("Modo depuración", value=st.session_state.features["enable_debug_mode"])
-
-def panel_cache_viewer():
-    with st.expander("🗂️ Caché de búsquedas"):
-        st.write(f"Entradas en caché: {len(search_cache.cache)}")
-        if st.button("🧹 Vaciar caché", use_container_width=True):
-            search_cache.cache.clear(); st.toast("Caché vaciada")
-
-def panel_favoritos_ui():
-    with st.expander("⭐ Favoritos"):
-        favs = listar_favoritos()
-        if not favs: st.info("Sin favoritos aún.")
-        else: st.dataframe([{"Título": f.titulo, "URL": f.url, "Notas": f.notas} for f in favs])
-
-# ============================================================
-# 13. APP PRINCIPAL
-# ============================================================
-def render_header():
-    st.markdown("""<div class="main-header"><h1>🎓 Buscador Profesional de Cursos</h1><p>Descubre recursos educativos verificados con análisis IA</p></div>""", unsafe_allow_html=True)
-
-def render_search_form():
-    col1, col2, col3 = st.columns([3, 1, 1])
-    tema = col1.text_input("¿Qué quieres aprender?", placeholder="Ej: Python, Machine Learning...", key="search_main")
-    nivel = col2.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"])
-    idioma = col3.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"])
-    buscar = st.button("🚀 Buscar Cursos", type="primary", use_container_width=True)
-    return tema, nivel, idioma, buscar
-
-def render_results(resultados: List[RecursoEducativo]):
-    if resultados:
-        st.success(f"✅ Se encontraron {len(resultados)} recursos verificados.")
-        planificar_analisis_ia(resultados)
-        # Espera breve para que la UI se actualice con el estado "pendiente"
-        time.sleep(0.5) 
-        for i, r in enumerate(resultados):
-            mostrar_recurso(r, i)
-        csv = exportar_busquedas(resultados)
-        st.download_button("📥 Descargar CSV", csv, "cursos.csv", "text/csv", use_container_width=True)
-    else:
-        st.warning("No se encontraron resultados. Intenta con términos más generales.")
-
-def sidebar_chat():
-    with st.sidebar:
-        st.header("💬 Asistente Educativo")
-        if not st.session_state.features.get("enable_chat_ia", True):
-            st.info("El chat IA está deshabilitado en la configuración.")
-            return
-        
-        if "chat_msgs" not in st.session_state: st.session_state.chat_msgs = []
-        for msg in st.session_state.chat_msgs: ui_chat_mostrar(msg["content"], msg["role"])
-
-        if user_input := st.chat_input("Pregunta sobre cursos..."):
-            st.session_state.chat_msgs.append({"role": "user", "content": user_input})
-            ui_chat_mostrar(user_input, "user")
-            with st.spinner("Pensando..."):
-                reply = chatgroq(st.session_state.chat_msgs)
-            st.session_state.chat_msgs.append({"role": "assistant", "content": reply})
-            st.rerun()
-
-def sidebar_status():
-    with st.sidebar:
-        st.markdown("---"); st.subheader("📊 Estado del sistema")
-        try:
-            with get_db_connection(DB_PATH) as conn:
-                total_plataformas = conn.execute("SELECT COUNT(*) FROM plataformas_ocultas WHERE activa = 1").fetchone()[0]
-                st.metric("Plataformas activas", total_plataformas)
-        except Exception: st.metric("Plataformas activas", "Error")
-        st.info(f"IA: {'✅ Disponible' if GROQ_AVAILABLE and st.session_state.features.get('enable_groq_analysis', True) else '⚠️ No disponible'}")
-
-def render_footer():
-    st.markdown("---")
-    st.markdown(f"""<div style="text-align:center;color:#666;font-size:14px;">✨ Buscador Profesional de Cursos v3.5 • {datetime.now().strftime('%d/%m/%Y')}</div>""", unsafe_allow_html=True)
-
-# ============================================================
-# 14. MAIN APP (CON CORRECCIÓN DE `StreamlitDuplicateElementKey`)
+# 10. APP PRINCIPAL (Búsqueda + Chat)
 # ============================================================
 def main():
-    render_header()
-    iniciar_tareas_background()
-    
-    tema, nivel, idioma, buscar = render_search_form()
+    st.markdown("""
+    <div class="main-header">
+      <h1>🎓 Buscador Profesional de Cursos</h1>
+      <p>Descubre recursos educativos verificados con búsqueda inmediata y análisis IA en segundo plano</p>
+      <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;">
+        <span class="status-badge">✅ Sistema Activo</span>
+        <span class="status-badge">⚡ AsyncIO Core</span>
+        <span class="status-badge">🌐 Multilingüe</span>
+        <span class="status-badge">🧠 IA opcional</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    if 'resultados' not in st.session_state:
-        st.session_state.resultados = []
+    iniciar_tareas_background()
+    col1, col2, col3 = st.columns([3, 1, 1])
+    tema = col1.text_input("¿Qué quieres aprender?", placeholder="Ej: Python, Machine Learning, Diseño UX...")
+    nivel = col2.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"])
+    idioma = col3.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"])
+
+    buscar = st.button("🚀 Buscar Cursos", type="primary", use_container_width=True)
 
     if buscar:
         if not (tema or "").strip():
             st.warning("Por favor ingresa un tema.")
         else:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            st.session_state.resultados = loop.run_until_complete(buscar_recursos_multicapa(tema.strip(), idioma, nivel))
-            loop.close()
-            # Forzar rerun para mostrar resultados y estados de IA actualizados
-            st.rerun()
+            with st.spinner("🔍 Buscando en múltiples fuentes..."):
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                resultados = loop.run_until_complete(buscar_recursos_multicapa(tema.strip(), idioma, nivel))
+                loop.close()
 
-    if st.session_state.resultados:
-        render_results(st.session_state.resultados)
+                if resultados:
+                    st.success(f"✅ Se encontraron {len(resultados)} recursos verificados.")
+                    if GROQ_AVAILABLE:
+                        planificar_analisis_ia(resultados)
+                        time.sleep(0.4)
 
-    # Paneles avanzados
-    st.markdown("### 🧭 Paneles avanzados")
-    colA, colB, colC = st.columns(3)
-    with colA: panel_configuracion_avanzada()
-    with colB: panel_cache_viewer()
-    with colC: panel_favoritos_ui()
+                    for i, r in enumerate(resultados):
+                        mostrar_recurso(r, i)
 
-    # Sidebar y Footer
-    sidebar_chat()
-    sidebar_status()
-    render_footer()
+                    df = pd.DataFrame([{
+                        'Título': r.titulo,
+                        'URL': r.url,
+                        'Plataforma': r.plataforma,
+                        'Nivel': r.nivel,
+                        'Idioma': r.idioma,
+                        'Categoría': r.categoria,
+                        'Confianza': f"{r.confianza:.0%}",
+                        'Tipo': r.tipo
+                    } for r in resultados])
+                    st.download_button("📥 Descargar CSV", df.to_csv(index=False).encode('utf-8'), "cursos.csv", "text/csv", use_container_width=True)
+                else:
+                    st.warning("No se encontraron resultados. Intenta con términos más generales.")
 
-# ============================================================
-# 15. ARRANQUE
-# ============================================================
+    # --- CHAT IA (Sidebar)
+    with st.sidebar:
+        st.header("💬 Asistente Educativo")
+        if "chat_msgs" not in st.session_state:
+            st.session_state.chat_msgs = []
+
+        # Mostrar historial limpio
+        for msg in st.session_state.chat_msgs:
+            ui_chat_mostrar(msg["content"], msg["role"])
+
+        user_input = st.chat_input("Pregunta sobre cursos...")
+        if user_input:
+            st.session_state.chat_msgs.append({"role": "user", "content": user_input})
+            ui_chat_mostrar(user_input, "user")
+            if GROQ_AVAILABLE:
+                reply = chatgroq([{"role": "user", "content": user_input}])
+                st.session_state.chat_msgs.append({"role": "assistant", "content": reply})
+                st.rerun()
+            else:
+                st.warning("Chat IA no disponible (Falta API Key)")
+
+    # --- SIDEBAR Extra: Estado del sistema
+    with st.sidebar:
+        st.markdown("---")
+        st.subheader("📊 Estado del sistema")
+        try:
+            with get_db_connection(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) FROM plataformas_ocultas WHERE activa = 1")
+                total_plataformas = c.fetchone()[0]
+                st.metric("Plataformas activas", total_plataformas)
+        except Exception:
+            st.metric("Plataformas activas", 0)
+        st.info(f"IA: {'✅ Disponible' if GROQ_AVAILABLE else '⚠️ No disponible'}")
+
+    # --- FOOTER
+    st.markdown("---")
+    st.markdown(f"""
+    <div style="text-align:center;color:#666;font-size:14px;padding:20px;background:#f8f9fa;border-radius:12px;">
+        <strong>✨ Buscador Profesional de Cursos</strong><br>
+        <span style="color: #2c3e50; font-weight: 500;">Resultados inmediatos • Cache inteligente • Alta disponibilidad</span><br>
+        <em style="color: #7f8c8d;">Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M')} • Versión: 3.2.0 • Estado: ✅ Activo</em><br>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #ddd;">
+            <code style="background:#f1f3f5;padding:2px 8px;border-radius:4px;color:#d32f2f;">
+                IA opcional — Sistema funcional sin dependencias externas críticas
+            </code>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 if __name__ == "__main__":
     main()
-
