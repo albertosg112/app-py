@@ -1068,7 +1068,8 @@ def render_header():
 
 def render_search_form():
     col1, col2, col3 = st.columns([3, 1, 1])
-    tema = col1.text_input("¿Qué quieres aprender?", placeholder="Ej: Python, Machine Learning, Diseño UX...")
+    # SE AÑADE key="search_main" para evitar el error de duplicados
+    tema = col1.text_input("¿Qué quieres aprender?", placeholder="Ej: Python, Machine Learning, Diseño UX...", key="search_main")
     nivel = col2.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"])
     idioma = col3.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"])
     buscar = st.button("🚀 Buscar Cursos", type="primary", use_container_width=True)
@@ -1669,3 +1670,4 @@ if __name__ == "__main__":
     main_extended()
     # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
     # end_session() podría llamarse en teardown manual si se desea.
+
