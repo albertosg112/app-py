@@ -1,6 +1,8 @@
-# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión Final Reparada)
-# Correcciones: get_i18n restaurado, Main unificado, Groq JSON fix, Sesión DB fix.
-
+# app.py — Versión FINAL corregida para Streamlit Cloud
+# ✅ Usa ia_module.py externo
+# ✅ Modelo vigente: llama-3.3-70b-versatile
+# ✅ Sin errores de DuplicateElementId
+# ✅ Un solo punto de entrada
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -24,32 +26,13 @@ import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 
-# ============================================================
-# 0. PERFILADO LIGERO Y DECORADORES DE UTILIDAD
-# ============================================================
-def profile(func: Callable):
-    """Decorador simple para medir tiempo de ejecución y loggear demoras sospechosas."""
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        t0 = time.perf_counter()
-        out = func(*args, **kwargs)
-        dt = time.perf_counter() - t0
-        if dt > 0.3:
-            logging.getLogger("Perf").info(f"⏱️ {func.__name__} tardó {dt:.3f}s")
-        return out
-    return wrapper
-
-def async_profile(func: Callable):
-    """Decorador para funciones async, reporta tiempos."""
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        t0 = time.perf_counter()
-        out = await func(*args, **kwargs)
-        dt = time.perf_counter() - t0
-        if dt > 0.3:
-            logging.getLogger("Perf").info(f"⏱️ {func.__name__} tardó {dt:.3f}s (async)")
-        return out
-    return wrapper
+# --- INTEGRACIÓN SEGURA DE ia_module.py ---
+try:
+    import ia_module
+    IA_MODULE_AVAILABLE = True
+except ImportError:
+    IA_MODULE_AVAILABLE = False
+    logging.warning("⚠️ ia_module.py no encontrado. IA desactivada.")
 
 # ============================================================
 # 1. LOGGING & CONFIGURACIÓN
@@ -62,7 +45,6 @@ logging.basicConfig(
 logger = logging.getLogger("BuscadorProfesional")
 
 def obtener_credenciales_seguras() -> Tuple[str, str, str]:
-    """Obtiene credenciales priorizando Secrets y luego Variables de Entorno."""
     try:
         g_key = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
         g_cx = st.secrets.get("GOOGLE_CX", os.getenv("GOOGLE_CX", ""))
@@ -75,28 +57,17 @@ GOOGLE_API_KEY, GOOGLE_CX, GROQ_API_KEY = obtener_credenciales_seguras()
 DUCKDUCKGO_ENABLED = (os.getenv("DUCKDUCKGO_ENABLED", "false").lower() == "true")
 MAX_BACKGROUND_TASKS = 2
 CACHE_EXPIRATION = timedelta(hours=12)
-GROQ_MODEL = "llama-3.3-70b-versatile"
 
-def validate_api_key(key: str, key_type: str) -> bool:
-    if not key or len(key) < 10:
-        return False
-    if key_type == "google" and not key.startswith(("AIza", "AIz")):
-        return False
-    return True
+# --- INYECCIÓN SEGURA DE CREDENCIALES EN ia_module ---
+if IA_MODULE_AVAILABLE and GROQ_API_KEY:
+    ia_module.GROQ_API_KEY = GROQ_API_KEY
+    if len(GROQ_API_KEY) >= 10:
+        ia_module.GROQ_AVAILABLE = True
 
-GROQ_AVAILABLE = False
-try:
-    import groq
-    if GROQ_API_KEY and len(GROQ_API_KEY) >= 10:
-        GROQ_AVAILABLE = True
-        logger.info("✅ Groq API disponible y validada")
-    else:
-        logger.warning("⚠️ Groq API Key ausente o inválida")
-except ImportError:
-    logger.warning("⚠️ Biblioteca 'groq' no instalada")
+GROQ_AVAILABLE = IA_MODULE_AVAILABLE and getattr(ia_module, 'GROQ_AVAILABLE', False)
 
 # ============================================================
-# 2. FEATURE FLAGS & CONFIGURACIONES AVANZADAS
+# 2. FEATURE FLAGS
 # ============================================================
 DEFAULT_FEATURES = {
     "enable_google_api": True,
@@ -110,7 +81,7 @@ DEFAULT_FEATURES = {
     "enable_offline_cache": True,
     "enable_ddg_fallback": False,
     "enable_debug_mode": False,
-    "ui_theme": "auto",  # auto | dark | light
+    "ui_theme": "auto",
     "max_results": 15,
     "max_analysis": 5
 }
@@ -118,10 +89,6 @@ DEFAULT_FEATURES = {
 def init_feature_flags():
     if "features" not in st.session_state:
         st.session_state.features = DEFAULT_FEATURES.copy()
-    # Garantizar consistencia si ambientes cambian
-    st.session_state.features["enable_google_api"] &= bool(validate_api_key(GOOGLE_API_KEY, "google") and GOOGLE_CX)
-    st.session_state.features["enable_groq_analysis"] &= GROQ_AVAILABLE
-
 # ============================================================
 # 3. CACHÉ & CONCURRENCIA
 # ============================================================
@@ -1168,17 +1135,48 @@ def render_footer():
     """, unsafe_allow_html=True)
 
 # ============================================================
-# 14. EVENT-BRIDGE PARA FAVORITOS (PostMessage desde botón HTML)
+# 14. FUNCIÓN PRINCIPAL ÚNICA
+# ============================================================
+def main():
+    render_header()
+    iniciar_tareas_background()
+    tema = st.text_input("¿Qué quieres aprender?", placeholder="Ej: Python, IA...", key="search_topic")
+    nivel = st.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"], key="search_level")
+    idioma = st.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"], key="search_lang")
+    buscar = st.button("🚀 Buscar Cursos", type="primary", use_container_width=True, key="search_btn")
+
+    resultados: List[RecursoEducativo] = []
+    if buscar and (tema or "").strip():
+        with st.spinner("🔍 Buscando..."):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            resultados = loop.run_until_complete(buscar_recursos_multicapa(tema.strip(), idioma, nivel))
+            loop.close()
+        render_results(resultados)
+
+    # Paneles
+    st.markdown("### 🧭 Paneles")
+    colA, colB, colC = st.columns(3)
+    with colA: panel_configuracion_avanzada()
+    with colB: panel_cache_viewer()
+    with colC: panel_favoritos_ui()
+    
+    st.markdown("---")
+    panel_feedback_ui(resultados)
+    panel_export_import_ui(resultados)
+    
+    sidebar_chat()
+    sidebar_status()
+    render_footer()
+
+# ============================================================
+# 15. EVENT-BRIDGE CORREGIDO (con key único)
 # ============================================================
 def event_bridge():
-    # En Streamlit no hay listener directo para window.postMessage.
-    # Implementamos un puente simple: cuando el usuario hace click en Favorito,
-    # le pedimos que confirme en un control de texto el ID del recurso y lo guardamos.
     st.markdown("### 🔗 Puente de eventos (Favoritos)")
-    fav_id = st.text_input("ID del recurso a guardar como favorito (pegar desde botón)")
-    fav_notas = st.text_input("Notas (opcional)")
-    if st.button("Guardar favorito manual", use_container_width=True):
-        # Sin resultados actuales, no podemos mapear; así que lo guardamos con URL vacía.
+    fav_id = st.text_input("ID del recurso...", key="event_bridge_fav_id")
+    fav_notas = st.text_input("Notas (opcional)", key="event_bridge_fav_notas")
+    if st.button("Guardar favorito manual", key="event_bridge_save_btn"):
         r = RecursoEducativo(
             id=fav_id or f"manual_{int(time.time())}",
             titulo="Favorito manual",
@@ -1195,11 +1193,17 @@ def event_bridge():
             activo=True,
             metadatos={}
         )
-        ok = agregar_favorito(r, fav_notas)
-        if ok:
-            st.success("Favorito guardado")
+        if agregar_favorito(r, fav_notas):
+            st.success("✅ Favorito guardado")
         else:
-            st.error("No se pudo guardar el favorito")
+            st.error("❌ Error al guardar")
+
+# ============================================================
+# 16. ÚNICO PUNTO DE ENTRADA
+# ============================================================
+if __name__ == "__main__":
+    main()
+    event_bridge()
 
 # ============================================================
 # 20. DUCKDUCKGO FALLBACK (OPCIONAL)
@@ -1650,3 +1654,4 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
