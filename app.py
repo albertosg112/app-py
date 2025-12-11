@@ -1219,13 +1219,16 @@ def main():
 # 15. EVENT-BRIDGE PARA FAVORITOS (PostMessage desde botón HTML)
 # ============================================================
 def event_bridge():
-    # En Streamlit no hay listener directo para window.postMessage.
-    # Implementamos un puente simple: cuando el usuario hace click en Favorito,
-    # le pedimos que confirme en un control de texto el ID del recurso y lo guardamos.
     st.markdown("### 🔗 Puente de eventos (Favoritos)")
-    fav_id = st.text_input("ID del recurso a guardar como favorito (pegar desde botón)")
-    fav_notas = st.text_input("Notas (opcional)")
-    if st.button("Guardar favorito manual", use_container_width=True):
+    fav_id = st.text_input(
+        "ID del recurso a guardar como favorito (pegar desde botón)",
+        key="fav_id_input"  # ← Clave única
+    )
+    fav_notas = st.text_input(
+        "Notas (opcional)",
+        key="fav_notas_input"  # ← Clave única
+    )
+    if st.button("Guardar favorito manual", use_container_width=True, key="btn_guardar_fav"):
         # Sin resultados actuales, no podemos mapear; así que lo guardamos con URL vacía.
         r = RecursoEducativo(
             id=fav_id or f"manual_{int(time.time())}",
@@ -1698,4 +1701,5 @@ if __name__ == "__main__":
     main_extended()
     # No cerramos la sesión automáticamente en Streamlit; el ciclo se mantiene vivo.
     # end_session() podría llamarse en teardown manual si se desea.
+
 
