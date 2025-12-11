@@ -1,5 +1,5 @@
-# app.py — Consolidado Definitivo Ultra-Robust PRO (SG1 + Async + UI/Chat + Parches + Módulos Extra)
-# Versión Corregida: Unificación de Main, Fix de Groq JSON y Fix de Sesión DB.
+# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión Final Reparada)
+# Correcciones: get_i18n restaurado, Main unificado, Groq JSON fix, Sesión DB fix.
 
 import streamlit as st
 import pandas as pd
@@ -229,7 +229,6 @@ def migrate_database():
     try:
         with get_db_connection(DB_PATH) as conn:
             c = conn.cursor()
-            # Auditoría general de eventos
             c.execute('''
             CREATE TABLE IF NOT EXISTS auditoria (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,7 +237,6 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
-            # Favoritos de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS favoritos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,7 +247,6 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
-            # Feedback de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -259,7 +256,6 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
-            # Sesiones de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS sesiones (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -270,7 +266,6 @@ def migrate_database():
                 prefs_json TEXT
             )
             ''')
-            # Telemetría opt-out: simple bandera global
             c.execute('''
             CREATE TABLE IF NOT EXISTS configuracion (
                 clave TEXT PRIMARY KEY,
@@ -1300,6 +1295,49 @@ def boton_registrar_click(r: RecursoEducativo, tema: str):
         if st.button("🔖 Registrar click", key=f"reg_click_{r.id}"):
             log_click_event(tema, r.url, r.plataforma)
             st.success("Click registrado")
+
+# ============================================================
+# 22. ACCESIBILIDAD E I18N SIMPLE
+# ============================================================
+I18N = {
+    "es": {
+        "search_button": "🚀 Buscar Cursos",
+        "enter_topic": "¿Qué quieres aprender?",
+        "level": "Nivel",
+        "language": "Idioma",
+        "results_found": "Se encontraron {n} recursos verificados.",
+        "no_results": "No se encontraron resultados. Intenta con términos más generales.",
+        "favorites": "Favoritos",
+        "feedback": "Feedback",
+        "export_import": "Exportar / Importar",
+    },
+    "en": {
+        "search_button": "🚀 Search Courses",
+        "enter_topic": "What do you want to learn?",
+        "level": "Level",
+        "language": "Language",
+        "results_found": "{n} verified resources found.",
+        "no_results": "No results found. Try broader terms.",
+        "favorites": "Favorites",
+        "feedback": "Feedback",
+        "export_import": "Export / Import",
+    },
+    "pt": {
+        "search_button": "🚀 Buscar Cursos",
+        "enter_topic": "O que você quer aprender?",
+        "level": "Nível",
+        "language": "Idioma",
+        "results_found": "{n} recursos verificados encontrados.",
+        "no_results": "Nenhum resultado encontrado. Tente termos mais gerais.",
+        "favorites": "Favoritos",
+        "feedback": "Feedback",
+        "export_import": "Exportar / Importar",
+    }
+}
+
+def get_i18n(lang_ui: str) -> Dict[str, str]:
+    code = get_codigo_idioma(lang_ui)
+    return I18N.get(code, I18N["es"])
 
 # ============================================================
 # 23. ADMIN DASHBOARD
