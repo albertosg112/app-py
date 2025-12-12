@@ -663,12 +663,64 @@ async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[Recur
         logger.error(f"Error Google API: {e}")
         return []
 
+def buscar_en_sitios_profundos(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
+    """Genera 1 recurso educativo de fuente poco conocida pero de alta calidad y gratuita."""
+    if not st.session_state.features.get("enable_known_platforms", True):
+        return []
+    
+    sitios_profundos = [
+        ("OER Commons", "https://www.oercommons.org/search?q={}", "Global", "en"),
+        ("MERLOT", "https://www.merlot.org/merlot/materials.htm?keywords={}", "EE.UU.", "en"),
+        ("OpenStax", "https://openstax.org/search?query={}", "EE.UU.", "en"),
+        ("Instituto Cervantes", "https://cvc.cervantes.es/ensenanza/biblioteca_ele/?q={}", "España", "es"),
+        ("UNESCO OER", "https://en.unesco.org/themes/education/ict/open-educational-resources", "Global", "en"),
+        ("Internet Archive", "https://archive.org/search?query={}+course", "Global", "en"),
+        ("Open Culture", "https://www.openculture.com/freeonlinecourses", "Global", "en"),
+        ("LibreTexts", "https://libretexts.org/search?terms={}", "Global", "en"),
+        ("Open WHO", "https://open.who.int/", "Global", "en"),
+        ("Biblioteca Pensamiento Novohispano", "https://pensamientonovohispano.org/", "México", "es"),
+        ("RIAL", "https://www.rial.org.mx/", "Iberoamérica", "es"),
+        ("Code.org", "https://code.org/educate/search?q={}", "Global", "en"),
+        ("CK-12", "https://www.ck12.org/search/?q={}", "Global", "en"),
+        ("Saylor Academy", "https://learn.saylor.org/course/index.php?search={}", "Global", "en")
+    ]
+    
+    # Filtrar por idioma
+    candidatos = [
+        (nombre, url_base.format(quote_plus(tema)))
+        for nombre, url_base, _, idioma_req in sitios_profundos
+        if idioma == idioma_req
+    ]
+    
+    if not candidatos:
+        candidatos = [
+            (nombre, url_base.format(quote_plus(tema)))
+            for nombre, url_base, _, _ in sitios_profundos
+        ]
+    
+    nombre_seleccionado, url_seleccionada = random.choice(candidatos)
+    
+    return [RecursoEducativo(
+        id=generar_id_unico(url_seleccionada),
+        titulo=f"🔍 Profundo: {tema} en {nombre_seleccionado}",
+        url=url_seleccionada,
+        descripcion=f"Recurso educativo gratuito de fuente poco indexada pero confiable: {nombre_seleccionado}.",
+        plataforma=nombre_seleccionado,
+        idioma=idioma,
+        nivel=nivel if nivel not in ("Cualquiera", "Todos") else "Intermedio",
+        categoria=determinar_categoria(tema),
+        certificacion=None,
+        confianza=0.77,
+        tipo="conocida",
+        ultima_verificacion=datetime.now().isoformat(),
+        activo=True,
+        metadatos={"fuente": "busqueda_profunda"}
+    )]
 def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_known_platforms", True):
         return []
-    recursos: List[RecursoEducativo] = []
     
-    # === 1. Lista predefinida (95% del tiempo) ===
+    # === 1. Lista predefinida de plataformas conocidas ===
     plataformas_predef = {
         "es": [
             {"nombre": "YouTube Educativo", "url": f"https://www.youtube.com/results?search_query=curso+gratis+{quote_plus(tema)}"},
@@ -692,40 +744,12 @@ def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) -> List[
         ]
     }
     lista_base = plataformas_predef.get(idioma, plataformas_predef["en"])
-    
-    # === 2. ¿Inyectar descubrimiento aleatorio? (5% de probabilidad) ===
-    modo_discovery = random.random() < 0.05  # 5% de las búsquedas
-    
-    if modo_discovery:
-        # Pool de dominios de élite para descubrimiento
-        pool_dominios = [
-            "mit.edu", "stanford.edu", "harvard.edu", "caltech.edu", "ox.ac.uk",
-            "cam.ac.uk", "berkeley.edu", "nyu.edu", "utoronto.ca", "ethz.ch",
-            "epfl.ch", "nus.edu.sg", "kaist.ac.kr", "unam.mx", "usp.br"
-        ]
-        dominios_aleatorios = random.sample(pool_dominios, min(2, len(pool_dominios)))
-        for dominio in dominios_aleatorios:
-            url_busqueda = f"https://www.google.com/search?q=site:{dominio}+{quote_plus(tema)}+curso"
-            recursos.append(RecursoEducativo(
-                id=generar_id_unico(url_busqueda),
-                titulo=f"🔎 Explorar {tema} en {dominio.title()}",
-                url=url_busqueda,
-                descripcion=f"Descubrimiento aleatorio: recursos sobre '{tema}' en {dominio}.",
-                plataforma=dominio.split('.')[0].title(),
-                idioma=idioma,
-                nivel=nivel if nivel != "Cualquiera" else "Intermedio",
-                categoria=determinar_categoria(tema),
-                certificacion=None,
-                confianza=0.75,
-                tipo="conocida",
-                ultima_verificacion=datetime.now().isoformat(),
-                activo=True,
-                metadatos={"fuente": "discovery_random"}
-            ))
-    else:
-        # Comportamiento normal (predefinido)
-        for plat in lista_base:
-            recursos.append(RecursoEducativo(
+
+    # === 2. Decisión: ¿modo predefinido o aleatorio? ===
+    if random.random() < 0.5:
+        # ✅ 50%: Modo predefinido → mostrar plataformas conocidas
+        return [
+            RecursoEducativo(
                 id=generar_id_unico(plat["url"]),
                 titulo=f"🎯 {plat['nombre']} — {tema}",
                 url=plat["url"],
@@ -740,10 +764,41 @@ def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) -> List[
                 ultima_verificacion=datetime.now().isoformat(),
                 activo=True,
                 metadatos={"fuente": "plataformas_conocidas"}
+            )
+            for plat in lista_base[:3]  # Máximo 3
+        ]
+    else:
+        # 🔁 50%: Modo aleatorio → 1 profundo + 2 universidades
+        recursos = []
+        
+        # ➕ 1 recurso profundo (representa ~25% del total final)
+        recursos.extend(buscar_en_sitios_profundos(tema, idioma, nivel))
+        
+        # ➕ 2 universidades de élite
+        universidades = [
+            "mit.edu", "stanford.edu", "harvard.edu", "ox.ac.uk", "cam.ac.uk",
+            "berkeley.edu", "ethz.ch", "nus.edu.sg", "utoronto.ca", "kaist.ac.kr"
+        ]
+        for dominio in random.sample(universidades, 2):
+            url = f"https://www.google.com/search?q=site:{dominio}+{quote_plus(tema)}+curso+free"
+            recursos.append(RecursoEducativo(
+                id=generar_id_unico(url),
+                titulo=f"🎓 Explorar {tema} en {dominio.title()}",
+                url=url,
+                descripcion=f"Recursos académicos gratuitos en la universidad {dominio}.",
+                plataforma=dominio.split('.')[0].title(),
+                idioma=idioma,
+                nivel=nivel if nivel != "Cualquiera" else "Intermedio",
+                categoria="Académico",
+                certificacion=None,
+                confianza=0.78,
+                tipo="conocida",
+                ultima_verificacion=datetime.now().isoformat(),
+                activo=True,
+                metadatos={"fuente": "discovery_universidad"}
             ))
-            if len(recursos) >= 6:
-                break
-    return recursos
+        
+        return recursos
 
 def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_hidden_platforms", True):
@@ -1765,4 +1820,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
