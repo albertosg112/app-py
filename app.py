@@ -613,6 +613,7 @@ def chatgroq(mensajes: List[Dict[str, str]]) -> str:
 # ============================================================
 # 8. BÚSQUEDA MULTICAPA (Google, Conocidas, Ocultas, DDG opcional)
 # ============================================================
+
 @async_profile
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_google_api", True):
@@ -722,12 +723,16 @@ def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[Re
                    tipo_certificacion, validez_internacional, paises_validos, reputacion_academica
             FROM plataformas_ocultas
             WHERE activa = 1 AND idioma = ?
+            ORDER BY RANDOM() LIMIT 4
             '''
             params = [idioma]
             if nivel not in ("Cualquiera", "Todos"):
-                query += " AND (nivel = ? OR nivel = 'Todos')"
-                params.append(nivel)
-            query += " ORDER BY confianza DESC LIMIT 6"
+                # Nota: la consulta original filtraba por nivel, pero aquí simplificamos para garantizar resultados
+                # Si quieres filtrar por nivel, descomenta y ajusta la query
+                # query += " AND (nivel = ? OR nivel = 'Todos')"
+                # params.append(nivel)
+                pass 
+            
             cursor.execute(query, params)
             filas = cursor.fetchall()
 
@@ -774,6 +779,59 @@ def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[Re
         logger.error(f"Error al obtener plataformas ocultas: {e}")
         return []
 
+def buscar_discovery_aleatorio(tema: str, idioma: str) -> List[RecursoEducativo]:
+    """
+    Selecciona 3 fuentes de alta calidad AL AZAR de una lista de élite.
+    Esto añade 'serendipia' sin tocar Google ni la DB.
+    """
+    fuentes_elite = [
+        ("MIT OpenCourseWare", "https://ocw.mit.edu/search/?q={}", "en"),
+        ("Stanford Online", "https://online.stanford.edu/search-catalog?search={}", "en"),
+        ("Harvard University", "https://pll.harvard.edu/catalog?keywords={}", "en"),
+        ("OER Commons", "https://www.oercommons.org/search?q={}", "en"),
+        ("Merlot.org", "https://www.merlot.org/merlot/materials.htm?keywords={}", "en"),
+        ("Class Central", "https://www.classcentral.com/search?q={}&free=true", "en"),
+        ("UNAM (CUAIEED)", "https://cuaieed.unam.mx/descargas.php?q={}", "es"),
+        ("Bibl. Cervantes", "https://www.cervantesvirtual.com/buscar/?q={}", "es"),
+        ("Redalyc Papers", "https://www.redalyc.org/busquedaArticuloFiltros.oa?q={}", "es"),
+        ("Eduteka", "https://eduteka.icesi.edu.co/buscador?q={}", "es"),
+        ("Khan Academy", "https://es.khanacademy.org/search?page_search_query={}", "es"),
+        ("Internet Archive", "https://archive.org/search?query={}&mediatype=texts", "en"),
+        ("FreeCodeCamp", "https://www.freecodecamp.org/news/search/?query={}", "en"),
+        ("Kaggle Datasets", "https://www.kaggle.com/search?q={}", "en"),
+        ("Google Books", "https://www.google.com/search?tbm=bks&q={}", "es")
+    ]
+
+    # Filtrar por idioma o permitir inglés como fallback universal
+    candidatos = [f for f in fuentes_elite if f[2] == idioma or f[2] == 'en']
+    
+    # Elegir 3 al azar
+    try:
+        seleccionados = random.sample(candidatos, min(3, len(candidatos)))
+    except ValueError:
+        seleccionados = []
+    
+    resultados = []
+    for nombre, url_pattern, lang in seleccionados:
+        url_final = url_pattern.format(quote_plus(tema))
+        resultados.append(RecursoEducativo(
+            id=generar_id_unico(url_final),
+            titulo=f"🎲 Explorar '{tema}' en {nombre}",
+            url=url_final,
+            descripcion=f"Sugerencia Discovery: Busca recursos de alta calidad en {nombre}.",
+            plataforma=nombre,
+            idioma=lang,
+            nivel="Varios",
+            categoria="Discovery",
+            certificacion=None,
+            confianza=0.88,
+            tipo="conocida",
+            ultima_verificacion=datetime.now().isoformat(),
+            activo=True,
+            metadatos={"fuente": "motor_aleatorio"}
+        ))
+    return resultados
+
 def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEducativo]:
     seen = set()
     unicos: List[RecursoEducativo] = []
@@ -784,49 +842,107 @@ def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEduca
     return unicos
 
 @async_profile
-async def buscar_recursos_multicapa(tema: str, idioma_seleccion_ui: str, nivel: str) -> List[RecursoEducativo]:
+async def buscar_recursos_multicapa_ext(tema: str, idioma_seleccion_ui: str, nivel: str) -> List[RecursoEducativo]:
+    # Cache Check
     cache_key = f"{tema}|{idioma_seleccion_ui}|{nivel}"
     cached = search_cache.get(cache_key)
-    if cached:
-        return cached
+    if cached: return cached
 
     idioma = get_codigo_idioma(idioma_seleccion_ui)
-    resultados: List[RecursoEducativo] = []
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    status_text.text("Buscando en plataformas ocultas...")
-    ocultas = buscar_en_plataformas_ocultas(tema, idioma, nivel)
-    resultados.extend(ocultas)
-    progress_bar.progress(0.3)
-
-    status_text.text("Consultando Google API...")
-    google_res = await buscar_en_google_api(tema, idioma, nivel)
-    resultados.extend(google_res)
-    progress_bar.progress(0.6)
-
-    status_text.text("Buscando en plataformas conocidas...")
-    conocidas = buscar_en_plataformas_conocidas(tema, idioma, nivel)
-    resultados.extend(conocidas)
-    progress_bar.progress(0.85)
-
-    status_text.text("Procesando y deduplicando resultados...")
-    resultados = eliminar_duplicados(resultados)
-    resultados.sort(key=lambda x: x.confianza, reverse=True)
-    if st.session_state.features.get("enable_groq_analysis", True) and GROQ_AVAILABLE:
-        for r in resultados[:st.session_state.features.get("max_analysis", 5)]:
-            r.analisis_pendiente = True
-
-    final = resultados[:st.session_state.features.get("max_results", 15)]
+    
+    # --- EJECUCIÓN PARALELA DE FUENTES ---
+    
+    # 1. Google API (Async) - NO SE TOCA, SE MANTIENE
+    task_google = buscar_en_google_api(tema, idioma, nivel)
+    
+    # 2. DuckDuckGo (Async) - Si está activo
+    task_ddg = buscar_en_duckduckgo(tema, idioma, nivel)
+    
+    # 3. Fuentes Síncronas (Rápidas)
+    res_db = buscar_en_plataformas_ocultas(tema, idioma, nivel)
+    res_known = buscar_en_plataformas_conocidas(tema, idioma, nivel)
+    res_discovery = buscar_discovery_aleatorio(tema, idioma)  # NUEVO MOTOR
+    
+    # Esperar a las tareas asíncronas
+    res_google, res_ddg = await asyncio.gather(task_google, task_ddg)
+    
+    # --- FUSIÓN DE RESULTADOS ---
+    # Sumamos todo lo que encontramos
+    todos = res_google + res_db + res_known + res_discovery + res_ddg
+    
+    # Limpieza final
+    todos = eliminar_duplicados(todos)
+    todos.sort(key=lambda x: x.confianza, reverse=True)
+    
+    # Recortar al máximo configurado
+    final = todos[:st.session_state.features.get("max_results", 15)]
+    
+    # Guardar en caché
     search_cache.set(cache_key, final)
-
-    progress_bar.progress(1.0)
-    time.sleep(0.1)
-    progress_bar.empty()
-    status_text.empty()
-
+    
+    # Preparar análisis IA si corresponde
+    if st.session_state.features.get("enable_groq_analysis", True) and GROQ_AVAILABLE:
+        for r in final[:st.session_state.features.get("max_analysis", 5)]:
+            r.analisis_pendiente = True
+            
     return final
+
+# --- NUEVA FUNCIÓN: BUSCAR RECURSO ALEATORIO DE ALTA CALIDAD ---
+@profile
+def buscar_recurso_aleatorio_calidad() -> Optional[RecursoEducativo]:
+    """
+    Busca un recurso educativo aleatorio que haya recibido alta calificación de los usuarios
+    y que no sea parte de las plataformas conocidas u ocultas predefinidas.
+    """
+    try:
+        with get_db_connection(DB_PATH) as conn:
+            c = conn.cursor()
+            # 1. Obtener todos los recursos con feedback de alta calidad (rating >= 4)
+            c.execute("""
+                SELECT DISTINCT id_recurso FROM feedback WHERE rating >= 4
+            """)
+            recursos_con_feedback_alto = [row[0] for row in c.fetchall()]
+
+            if not recursos_con_feedback_alto:
+                return None
+
+            # 2. Seleccionar uno al azar
+            recurso_id_seleccionado = random.choice(recursos_con_feedback_alto)
+
+            # 3. Obtener los detalles completos del recurso desde la tabla de feedback
+            c.execute("""
+                SELECT id_recurso, titulo, url FROM feedback WHERE id_recurso = ? AND rating >= 4 LIMIT 1
+            """, (recurso_id_seleccionado,))
+            fila = c.fetchone()
+
+            if not fila:
+                return None
+
+            id_recurso, titulo, url = fila
+
+            # Crear un objeto RecursoEducativo básico
+            recurso = RecursoEducativo(
+                id=id_recurso,
+                titulo=titulo or "Recurso Descubierto",
+                url=url or "",
+                descripcion="Recurso descubierto por alta calificación de usuarios.",
+                plataforma=extraer_plataforma(url),
+                idioma="es",  # Puede ajustarse según necesidad
+                nivel="Intermedio",  # Puede ajustarse según necesidad
+                categoria=determinar_categoria(titulo),  # Usamos la función existente
+                certificacion=None,
+                confianza=0.9,  # Alta confianza por feedback positivo
+                tipo="descubierto",  # Nuevo tipo para identificarlo
+                ultima_verificacion=datetime.now().isoformat(),
+                activo=True,
+                metadatos={"fuente": "feedback_usuario", "calificacion_media": 4.5}
+            )
+
+            return recurso
+
+    except Exception as e:
+        logger.error(f"Error al buscar recurso aleatorio de calidad: {e}")
+        return None
 
 # ============================================================
 # 9. PROCESAMIENTO EN SEGUNDO PLANO (Background Workers)
@@ -1169,9 +1285,9 @@ def render_header():
 
 def render_search_form():
     col1, col2, col3 = st.columns([3, 1, 1])
-    tema = col1.text_input("¿Qué quieres aprender?", placeholder="Ej: Python, Machine Learning, Diseño UX...")
-    nivel = col2.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"])
-    idioma = col3.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"])
+    tema = col1.text_input("¿Qué quieres aprender?", placeholder="Ej: Python, Machine Learning, Diseño UX...", key="search_topic_input")
+    nivel = col2.selectbox("Nivel", ["Cualquiera", "Principiante", "Intermedio", "Avanzado"], key="search_level_select")
+    idioma = col3.selectbox("Idioma", ["Español (es)", "Inglés (en)", "Portugués (pt)"], key="search_lang_select")
     buscar = st.button("🚀 Buscar Cursos", type="primary", use_container_width=True)
     return tema, nivel, idioma, buscar
 
@@ -1179,22 +1295,12 @@ def render_results(resultados: List[RecursoEducativo]):
     if resultados:
         st.success(f"✅ Se encontraron {len(resultados)} recursos verificados.")
         if GROQ_AVAILABLE and st.session_state.features.get("enable_groq_analysis", True):
-            planificar_analisis_ia(resultados)
-            time.sleep(0.4)
+             planificar_analisis_ia(resultados)
+             time.sleep(0.4)
+
         for i, r in enumerate(resultados):
             mostrar_recurso(r, i)
-        df = pd.DataFrame([{
-            'Título': r.titulo,
-            'URL': r.url,
-            'Plataforma': r.plataforma,
-            'Nivel': r.nivel,
-            'Idioma': r.idioma,
-            'Categoría': r.categoria,
-            'Confianza': f"{r.confianza:.0%}",
-            'Tipo': r.tipo
-        } for r in resultados])
-        st.download_button("📥 Descargar CSV", df.to_csv(index=False).encode('utf-8'), "cursos.csv", "text/csv", use_container_width=True)
-    else:
+    elif 'resultados' in st.session_state:
         st.warning("No se encontraron resultados. Intenta con términos más generales.")
 
 def sidebar_chat():
@@ -1649,14 +1755,11 @@ def main():
 
     # Formulario de búsqueda
     i18n = get_i18n(st.session_state.get('lang_ui', 'Español (es)'))
-    tema = st.text_input(i18n["enter_topic"], placeholder="Ej: Python, IA, Finanzas...", key="search_topic_input")
-    col_form1, col_form2 = st.columns(2)
-    nivel = col_form1.selectbox(i18n["level"], ["Cualquiera", "Principiante", "Intermedio", "Avanzado"], key="search_level_select")
-    idioma = col_form2.selectbox(i18n["language"], ["Español (es)", "Inglés (en)", "Portugués (pt)"], key="search_lang_select")
+    tema, nivel, idioma, buscar = render_search_form()
     st.session_state['lang_ui'] = idioma # Guardar selección
 
     # --- Lógica de Búsqueda ---
-    if st.button(i18n["search_button"], type="primary", use_container_width=True):
+    if buscar:
         if not (tema or "").strip():
             st.warning("Por favor ingresa un tema para buscar.")
         else:
