@@ -659,145 +659,147 @@ def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool
     # Retornar verdadero si contiene términos válidos
     return any(v in t for v in validas) or any(d in url.lower() for d in dominios_excluidos)
 
-
 @async_profile
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_google_api", True):
         return []
     if not validate_api_key(GOOGLE_API_KEY, "google") or not GOOGLE_CX:
         return []
+
     try:
-        query_base = f"{tema} curso gratuito certificado"
+        # === MEJORA 1: Construcción avanzada del query con operadores de búsqueda ===
+        tema_limpio = tema.strip().replace(":", "").replace('"', "")
+        query_parts = [f'"{tema_limpio}"']
+        
+        # Añadir palabras clave educativas controladas
+        query_parts.append("(curso OR tutorial OR aprendizaje OR capacitación OR clase)")
+        query_parts.append("(gratuito OR free OR sin costo OR open access)")
+
         if nivel not in ("Cualquiera", "Todos"):
-            query_base += f" nivel {nivel.lower()}"
+            nivel_norm = nivel.lower()
+            query_parts.append(f'(nivel:{nivel_norm} OR "{nivel_norm}")')
+
+        # Excluir términos no deseados con operador -
+        exclusiones = [
+            "-comprar", "-pago", "-premium", "-suscripción", "-matrícula",
+            "-precio", "-register", "-login", "-sign up", "-onlyfans"
+        ]
+
+        query_base = " ".join(query_parts) + " " + " ".join(exclusiones)
 
         url = "https://www.googleapis.com/customsearch/v1"
         params = {
             'key': GOOGLE_API_KEY,
             'cx': GOOGLE_CX,
             'q': query_base,
-            'num': 10,  # Aumentar el número de resultados
-            'lr': f'lang_{idioma}'
+            'num': 10,
+            'lr': f'lang_{idioma}',
+            'safe': 'active'  # Filtrado seguro
         }
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params, timeout=8) as response:
                 if response.status != 200:
+                    logger.warning(f"Google API devolvió status {response.status}")
                     return []
                 data = await response.json()
                 items = data.get('items', [])
                 resultados: List[RecursoEducativo] = []
 
+                # === MEJORA 2: Definir dominios prioritarios ===
+                DOMINIOS_PRIORITARIOS = {
+                    'coursera.org': 1.0,
+                    'edx.org': 1.0,
+                    'udemy.com': 0.95,
+                    'youtube.com': 0.92,
+                    'khanacademy.org': 0.94,
+                    'freecodecamp.org': 0.93,
+                    'futurelearn.com': 0.90,
+                    'alison.com': 0.88,
+                    'mit.edu': 0.96,
+                    'harvard.edu': 0.96,
+                    'stanford.edu': 0.95,
+                    'universityof': 0.85,  # universidades genéricas
+                    'phoenix.edu': 0.80,
+                    'open.edu': 0.87,
+                    'swayam.gov.in': 0.85,
+                    'unicef.org': 0.80
+                }
+
                 for item in items:
-                    url_item = item.get('link', '')
-                    titulo = item.get('title', '')
-                    descripcion = item.get('snippet', '')
+                    url_item = item.get('link', '').strip()
+                    titulo = item.get('title', '').strip()
+                    descripcion = item.get('snippet', '').strip()
 
-                    # Filtrar resultados más estrictamente
-                    if not es_recurso_educativo_valido(url_item, titulo, descripcion):
+                    if not url_item or not es_recurso_educativo_valido(url_item, titulo, descripcion):
                         continue
-                    
-                    nivel_calc = determinar_nivel(titulo + " " + descripcion, nivel)
-                    confianza = 0.83
-                    
-                    # Mejora en la evaluación de confianza
-                    if any(d in url_item.lower() for d in ['.edu', 'coursera.org', 'edx.org', 'freecodecamp.org', '.gov']):
-                        confianza = min(confianza + 0.1, 0.95)
-                    
-                    # Calcular relevancia
-                    relevancia = calcular_relevancia(titulo, descripcion, tema)
 
-                    # Añadir el recurso a la lista
-                    resultados.append(RecursoEducativo(
+                    dominio = urlparse(url_item).netloc.lower()
+                    nivel_calc = determinar_nivel(titulo + " " + descripcion, nivel)
+                    categoria = determinar_categoria(tema)
+                    plataforma = extraer_plataforma(url_item)
+
+                    # Calcular relevancia mejorada: coincidencia + proximidad semántica básica
+                    relevancia_texto = calcular_relevancia(titulo, descripcion, tema)
+                    
+                    # Asignar boost si es dominio conocido
+                    boost_confianza = 0.0
+                    prioridad_plataforma = 0
+                    for dominio_p, conf_base in DOMINIOS_PRIORITARIOS.items():
+                        if dominio_p in dominio:
+                            boost_confianza = conf_base
+                            prioridad_plataforma = 1
+                            break
+
+                    confianza_base = 0.80
+                    if boost_confianza > 0:
+                        confianza = min(boost_confianza + (relevancia_texto * 0.1), 0.98)
+                    else:
+                        confianza = min(confianza_base + (relevancia_texto * 0.15), 0.92)
+
+                    # Metadatos enriquecidos
+                    metadatos = {
+                        'fuente': 'google_api',
+                        'relevancia': relevancia_texto,
+                        'prioridad_plataforma': prioridad_plataforma,
+                        'dominio': dominio
+                    }
+
+                    recurso = RecursoEducativo(
                         id=generar_id_unico(url_item),
                         titulo=titulo or f"Recurso {generar_id_unico(url_item)}",
                         url=url_item,
                         descripcion=descripcion or "Sin descripción disponible.",
-                        plataforma=extraer_plataforma(url_item),
+                        plataforma=plataforma,
                         idioma=idioma,
                         nivel=nivel_calc,
-                        categoria=determinar_categoria(tema),
+                        categoria=categoria,
                         certificacion=None,
                         confianza=confianza,
                         tipo="verificada",
                         ultima_verificacion=datetime.now().isoformat(),
                         activo=True,
-                        metadatos={'fuente': 'google_api', 'relevancia': relevancia}
-                    ))
+                        metadatos=metadatos
+                    )
 
-                # Clasificar resultados por relevancia
-                resultados.sort(key=lambda x: x.metadatos.get('relevancia', 0), reverse=True)
-                return resultados[:10]  # Limitar los resultados a los primeros 10
+                    resultados.append(recurso)
+
+                # === MEJORA 3: Ordenación inteligente ===
+                # 1. Primero: plataformas prioritarias
+                # 2. Luego: por relevancia descendente
+                resultados.sort(
+                    key=lambda r: (
+                        -r.metadatos.get('prioridad_plataforma', 0),
+                        -r.metadatos.get('relevancia', 0),
+                        -r.confianza
+                    )
+                )
+
+                # Limitar a 10 resultados más relevantes
+                return resultados[:10]
+
     except Exception as e:
-        logger.error(f"Error Google API: {e}")
-        return []
-
-
-@async_profile
-async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    if not st.session_state.features.get("enable_google_api", True):
-        return []
-    if not validate_api_key(GOOGLE_API_KEY, "google") or not GOOGLE_CX:
-        return []
-    try:
-        # Ajustar la consulta para incluir más términos relevantes
-        query_base = f"{tema} curso gratuito certificado"
-        if nivel not in ("Cualquiera", "Todos"):
-            query_base += f" nivel {nivel.lower()}"
-
-        url = "https://www.googleapis.com/customsearch/v1"
-        params = {
-            'key': GOOGLE_API_KEY,
-            'cx': GOOGLE_CX,
-            'q': query_base,
-            'num': 10,  # Aumentar el número de resultados
-            'lr': f'lang_{idioma}'
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=8) as response:
-                if response.status != 200:
-                    return []
-                data = await response.json()
-                items = data.get('items', [])
-                resultados: List[RecursoEducativo] = []
-                
-                for item in items:
-                    url_item = item.get('link', '')
-                    titulo = item.get('title', '')
-                    descripcion = item.get('snippet', '')
-                    
-                    # Filtrar resultados más estrictamente
-                    if not es_recurso_educativo_valido(url_item, titulo, descripcion):
-                        continue
-                    
-                    nivel_calc = determinar_nivel(titulo + " " + descripcion, nivel)
-                    confianza = 0.83
-                    
-                    # Mejora en la evaluación de confianza
-                    if any(d in url_item.lower() for d in ['.edu', 'coursera.org', 'edx.org', 'freecodecamp.org', '.gov']):
-                        confianza = min(confianza + 0.1, 0.95)
-                    
-                    # Añadir el recurso a la lista
-                    resultados.append(RecursoEducativo(
-                        id=generar_id_unico(url_item),
-                        titulo=titulo or f"Recurso {generar_id_unico(url_item)}",
-                        url=url_item,
-                        descripcion=descripcion or "Sin descripción disponible.",
-                        plataforma=extraer_plataforma(url_item),
-                        idioma=idioma,
-                        nivel=nivel_calc,
-                        categoria=determinar_categoria(tema),
-                        certificacion=None,
-                        confianza=confianza,
-                        tipo="verificada",
-                        ultima_verificacion=datetime.now().isoformat(),
-                        activo=True,
-                        metadatos={'fuente': 'google_api'}
-                    ))
-                return resultados[:10]  # Limitar los resultados a los primeros 10
-    except Exception as e:
-        logger.error(f"Error Google API: {e}")
+        logger.error(f"Error en buscar_en_google_api: {e}")
         return []
 
 
@@ -1869,6 +1871,7 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
 
 
