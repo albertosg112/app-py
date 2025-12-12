@@ -613,6 +613,98 @@ def chatgroq(mensajes: List[Dict[str, str]]) -> str:
 # ============================================================
 # 8. BÚSQUEDA MULTICAPA (Google, Conocidas, Ocultas, DDG opcional)
 # ============================================================
+# ... (código anterior)
+
+def calcular_relevancia(titulo: str, descripcion: str, tema: str) -> float:
+    """Calcula la relevancia de un recurso basado en coincidencias de palabras clave."""
+    relevancia = 0.0
+    palabras_clave = tema.lower().split()  # Dividir el tema en palabras clave
+
+    # Aumentar la relevancia por coincidencias en el título
+    for palabra in palabras_clave:
+        if palabra in titulo.lower():
+            relevancia += 1.0  # Coincidencia en el título
+
+    # Aumentar la relevancia por coincidencias en la descripción
+    for palabra in palabras_clave:
+        if palabra in descripcion.lower():
+            relevancia += 0.5  # Coincidencia en la descripción
+
+    return relevancia
+
+@async_profile
+async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
+    if not st.session_state.features.get("enable_google_api", True):
+        return []
+    if not validate_api_key(GOOGLE_API_KEY, "google") or not GOOGLE_CX:
+        return []
+    try:
+        query_base = f"{tema} curso gratuito certificado"
+        if nivel not in ("Cualquiera", "Todos"):
+            query_base += f" nivel {nivel.lower()}"
+
+        url = "https://www.googleapis.com/customsearch/v1"
+        params = {
+            'key': GOOGLE_API_KEY,
+            'cx': GOOGLE_CX,
+            'q': query_base,
+            'num': 10,  # Aumentar el número de resultados
+            'lr': f'lang_{idioma}'
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=8) as response:
+                if response.status != 200:
+                    return []
+                data = await response.json()
+                items = data.get('items', [])
+                resultados: List[RecursoEducativo] = []
+
+                for item in items:
+                    url_item = item.get('link', '')
+                    titulo = item.get('title', '')
+                    descripcion = item.get('snippet', '')
+
+                    # Filtrar resultados más estrictamente
+                    if not es_recurso_educativo_valido(url_item, titulo, descripcion):
+                        continue
+                    
+                    nivel_calc = determinar_nivel(titulo + " " + descripcion, nivel)
+                    confianza = 0.83
+                    
+                    # Mejora en la evaluación de confianza
+                    if any(d in url_item.lower() for d in ['.edu', 'coursera.org', 'edx.org', 'freecodecamp.org', '.gov']):
+                        confianza = min(confianza + 0.1, 0.95)
+                    
+                    # Calcular relevancia
+                    relevancia = calcular_relevancia(titulo, descripcion, tema)
+
+                    # Añadir el recurso a la lista
+                    resultados.append(RecursoEducativo(
+                        id=generar_id_unico(url_item),
+                        titulo=titulo or f"Recurso {generar_id_unico(url_item)}",
+                        url=url_item,
+                        descripcion=descripcion or "Sin descripción disponible.",
+                        plataforma=extraer_plataforma(url_item),
+                        idioma=idioma,
+                        nivel=nivel_calc,
+                        categoria=determinar_categoria(tema),
+                        certificacion=None,
+                        confianza=confianza,
+                        tipo="verificada",
+                        ultima_verificacion=datetime.now().isoformat(),
+                        activo=True,
+                        metadatos={'fuente': 'google_api', 'relevancia': relevancia}
+                    ))
+
+                # Clasificar resultados por relevancia
+                resultados.sort(key=lambda x: x.metadatos.get('relevancia', 0), reverse=True)
+                return resultados[:10]  # Limitar los resultados a los primeros 10
+    except Exception as e:
+        logger.error(f"Error Google API: {e}")
+        return []
+
+
 @async_profile
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_google_api", True):
@@ -1749,4 +1841,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
