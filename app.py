@@ -662,10 +662,6 @@ def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool
 
 @async_profile
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    # ... (resto de la función)
-
-@async_profile
-async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_google_api", True):
         return []
     if not validate_api_key(GOOGLE_API_KEY, "google") or not GOOGLE_CX:
@@ -1873,6 +1869,7 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
 
 
