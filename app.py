@@ -735,18 +735,15 @@ def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[Re
     try:
         with get_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
+            # Usamos RANDOM para variar los resultados de la DB
             query = '''
             SELECT nombre, url_base, descripcion, nivel, confianza,
                    tipo_certificacion, validez_internacional, paises_validos, reputacion_academica
             FROM plataformas_ocultas
             WHERE activa = 1 AND idioma = ?
+            ORDER BY RANDOM() LIMIT 4
             '''
-            params = [idioma]
-            if nivel not in ("Cualquiera", "Todos"):
-                query += " AND (nivel = ? OR nivel = 'Todos')"
-                params.append(nivel)
-            query += " ORDER BY confianza DESC LIMIT 6"
-            cursor.execute(query, params)
+            cursor.execute(query, [idioma])
             filas = cursor.fetchall()
 
             recursos: List[RecursoEducativo] = []
@@ -791,7 +788,7 @@ def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[Re
     except Exception as e:
         logger.error(f"Error al obtener plataformas ocultas: {e}")
         return []
-# --- NUEVA FUNCIÓN: MOTOR DISCOVERY (Agrega esto sin borrar nada) ---
+
 def buscar_discovery_aleatorio(tema: str, idioma: str) -> List[RecursoEducativo]:
     """
     Selecciona 3 fuentes de alta calidad AL AZAR de una lista de élite.
@@ -819,7 +816,10 @@ def buscar_discovery_aleatorio(tema: str, idioma: str) -> List[RecursoEducativo]
     candidatos = [f for f in fuentes_elite if f[2] == idioma or f[2] == 'en']
     
     # Elegir 3 al azar
-    seleccionados = random.sample(candidatos, min(3, len(candidatos)))
+    try:
+        seleccionados = random.sample(candidatos, min(3, len(candidatos)))
+    except ValueError:
+        seleccionados = []
     
     resultados = []
     for nombre, url_pattern, lang in seleccionados:
@@ -841,6 +841,7 @@ def buscar_discovery_aleatorio(tema: str, idioma: str) -> List[RecursoEducativo]
             metadatos={"fuente": "motor_aleatorio"}
         ))
     return resultados
+
 def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEducativo]:
     seen = set()
     unicos: List[RecursoEducativo] = []
@@ -861,25 +862,21 @@ async def buscar_recursos_multicapa_ext(tema: str, idioma_seleccion_ui: str, niv
     
     # --- EJECUCIÓN PARALELA DE FUENTES ---
     
-    # 1. Google API (Async) - NO SE TOCA, SE MANTIENE
+    # 1. Google API (Async)
     task_google = buscar_en_google_api(tema, idioma, nivel)
     
-    # 2. DuckDuckGo (Async) - Si está activo
+    # 2. DuckDuckGo (Async)
     task_ddg = buscar_en_duckduckgo(tema, idioma, nivel)
     
     # 3. Fuentes Síncronas (Rápidas)
-    # Aquí llamamos a lo que ya tenías...
-    res_db = buscar_en_plataformas_ocultas(tema, idioma, nivel)       # Tu DB original
-    res_known = buscar_en_plataformas_conocidas(tema, idioma, nivel)   # Tu lista original
-    
-    # ... Y AQUÍ AGREGAMOS LA NUEVA "MAGIA"
-    res_discovery = buscar_discovery_aleatorio(tema, idioma)           # <--- NUEVO COMPONENTE
+    res_db = buscar_en_plataformas_ocultas(tema, idioma, nivel)
+    res_known = buscar_en_plataformas_conocidas(tema, idioma, nivel)
+    res_discovery = buscar_discovery_aleatorio(tema, idioma)  # NUEVO MOTOR
     
     # Esperar a las tareas asíncronas
     res_google, res_ddg = await asyncio.gather(task_google, task_ddg)
     
     # --- FUSIÓN DE RESULTADOS ---
-    # Sumamos todo lo que encontramos
     todos = res_google + res_db + res_known + res_discovery + res_ddg
     
     # Limpieza final
@@ -898,7 +895,6 @@ async def buscar_recursos_multicapa_ext(tema: str, idioma_seleccion_ui: str, niv
             r.analisis_pendiente = True
             
     return final
-
 # ============================================================
 # 9. PROCESAMIENTO EN SEGUNDO PLANO (Background Workers)
 # ============================================================
@@ -1813,5 +1809,6 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
 
