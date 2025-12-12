@@ -862,7 +862,50 @@ def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[Re
     except Exception as e:
         logger.error(f"Error al obtener plataformas ocultas: {e}")
         return []
+@profile
+def verificar_calidad_recurso(recurso: RecursoEducativo, tema: str) -> bool:
+    """
+    Verifica que:
+    1. La URL responde con código 200.
+    2. El contenido de la página incluye al menos 2 palabras clave del tema.
+    Retorna True si pasa ambas pruebas.
+    """
+    try:
+        import aiohttp
+        import asyncio
 
+        # Palabras clave derivadas del tema (simplificado)
+        palabras_tema = set(re.split(r'\W+', tema.lower()))
+        palabras_tema.discard('')  # Eliminar strings vacíos
+
+        if len(palabras_tema) == 0:
+            return True  # No hay tema, no se puede validar
+
+        async def _verificar():
+            timeout = aiohttp.ClientTimeout(total=5.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                try:
+                    async with session.get(recurso.url, headers={"User-Agent": "Mozilla/5.0 (compatible; BuscadorCursos/1.0)"}) as resp:
+                        if resp.status != 200:
+                            return False
+                        contenido = await resp.text()
+                        contenido_limpio = contenido.lower()
+
+                        coincidencias = sum(1 for palabra in palabras_tema if palabra in contenido_limpio)
+                        return coincidencias >= min(2, len(palabras_tema))  # al menos 2 o todas si hay <2
+                except Exception:
+                    return False
+
+        # Ejecutar async en contexto sync
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        resultado = loop.run_until_complete(_verificar())
+        loop.close()
+        return resultado
+
+    except Exception as e:
+        logger.warning(f"Error en verificación de calidad para {recurso.url}: {e}")
+        return False
 def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEducativo]:
     seen = set()
     unicos: List[RecursoEducativo] = []
@@ -1820,5 +1863,6 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
 
