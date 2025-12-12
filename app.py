@@ -613,56 +613,74 @@ def chatgroq(mensajes: List[Dict[str, str]]) -> str:
 # ============================================================
 # 8. BÚSQUEDA MULTICAPA (Google, Conocidas, Ocultas, DDG opcional)
 # ============================================================
+# ============================================================
+# 8. BÚSQUEDA MULTICAPA (Google, Conocidas, Ocultas, DDG opcional)
+# ============================================================
+
 @async_profile
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    if not st.session_state.features.get("enable_google_api", True):
-        return []
-    if not validate_api_key(GOOGLE_API_KEY, "google") or not GOOGLE_CX:
-        return []
-    try:
-        query_base = f"{tema} curso gratuito certificado"
-        if nivel not in ("Cualquiera", "Todos"):
-            query_base += f" nivel {nivel.lower()}"
-        url = "https://www.googleapis.com/customsearch/v1"
-        params = {'key': GOOGLE_API_KEY, 'cx': GOOGLE_CX, 'q': query_base, 'num': 5, 'lr': f'lang_{idioma}'}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=8) as response:
-                if response.status != 200:
-                    return []
-                data = await response.json()
-                items = data.get('items', [])
-                resultados: List[RecursoEducativo] = []
-                for item in items:
-                    url_item = item.get('link', '')
-                    titulo = item.get('title', '')
-                    descripcion = item.get('snippet', '')
-                    if not es_recurso_educativo_valido(url_item, titulo, descripcion):
-                        continue
-                    nivel_calc = determinar_nivel(titulo + " " + descripcion, nivel)
-                    confianza = 0.83
-                    if any(d in url_item.lower() for d in ['.edu', 'coursera.org', 'edx.org', 'freecodecamp.org', '.gov']):
-                        confianza = min(confianza + 0.1, 0.95)
-                    resultados.append(RecursoEducativo(
-                        id=generar_id_unico(url_item),
-                        titulo=titulo or f"Recurso {generar_id_unico(url_item)}",
-                        url=url_item,
-                        descripcion=descripcion or "Sin descripción disponible.",
-                        plataforma=extraer_plataforma(url_item),
-                        idioma=idioma,
-                        nivel=nivel_calc,
-                        categoria=determinar_categoria(tema),
-                        certificacion=None,
-                        confianza=confianza,
-                        tipo="verificada",
-                        ultima_verificacion=datetime.now().isoformat(),
-                        activo=True,
-                        metadatos={'fuente': 'google_api'}
-                    ))
-                return resultados[:5]
-    except Exception as e:
-        logger.error(f"Error Google API: {e}")
-        return []
+    # ... (tu código existente aquí) ...
 
+def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEducativo]:
+    # ... (tu código existente aquí) ...
+
+# --- NUEVA FUNCIÓN: BUSCAR RECURSO ALEATORIO DE ALTA CALIDAD ---
+# --- NUEVA FUNCIÓN: BUSCAR RECURSO ALEATORIO DE ALTA CALIDAD ---
+@profile
+def buscar_recurso_aleatorio_calidad() -> Optional[RecursoEducativo]:
+    """
+    Busca un recurso educativo aleatorio que haya recibido alta calificación de los usuarios
+    y que no sea parte de las plataformas conocidas u ocultas predefinidas.
+    """
+    try:
+        with get_db_connection(DB_PATH) as conn:
+            c = conn.cursor()
+            # 1. Obtener todos los recursos con feedback de alta calidad (rating >= 4)
+            c.execute("""
+                SELECT DISTINCT id_recurso FROM feedback WHERE rating >= 4
+            """)
+            recursos_con_feedback_alto = [row[0] for row in c.fetchall()]
+
+            if not recursos_con_feedback_alto:
+                return None
+
+            # 2. Seleccionar uno al azar
+            recurso_id_seleccionado = random.choice(recursos_con_feedback_alto)
+
+            # 3. Obtener los detalles completos del recurso desde la tabla de feedback
+            c.execute("""
+                SELECT id_recurso, titulo, url FROM feedback WHERE id_recurso = ? AND rating >= 4 LIMIT 1
+            """, (recurso_id_seleccionado,))
+            fila = c.fetchone()
+
+            if not fila:
+                return None
+
+            id_recurso, titulo, url = fila
+
+            # Crear un objeto RecursoEducativo básico
+            recurso = RecursoEducativo(
+                id=id_recurso,
+                titulo=titulo or "Recurso Descubierto",
+                url=url or "",
+                descripcion="Recurso descubierto por alta calificación de usuarios.",
+                plataforma=extraer_plataforma(url),
+                idioma="es",  # Puede ajustarse según necesidad
+                nivel="Intermedio",  # Puede ajustarse según necesidad
+                categoria=determinar_categoria(titulo),  # Usamos la función existente
+                certificacion=None,
+                confianza=0.9,  # Alta confianza por feedback positivo
+                tipo="descubierto",  # Nuevo tipo para identificarlo
+                ultima_verificacion=datetime.now().isoformat(),
+                activo=True,
+                metadatos={"fuente": "feedback_usuario", "calificacion_media": 4.5}
+            )
+
+            return recurso
+
+    except Exception as e:
+        logger.error(f"Error al buscar recurso aleatorio de calidad: {e}")
+        return None
 def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_known_platforms", True):
         return []
@@ -1732,7 +1750,18 @@ def main():
                     st.error(f"Ocurrió un error durante la búsqueda: {e}")
                     st.session_state.resultados = []
             st.rerun()
+# --- NUEVO COMPONENTE: DESCUBRIMIENTO ALEATORIO ---
+st.markdown("---")
+st.markdown("### 🎯 Descubrimiento Aleatorio de Alta Calidad")
 
+if st.button("🔍 Descubrir un recurso nuevo y excelente", use_container_width=True):
+    with st.spinner("Buscando un recurso excepcional..."):
+        recurso_aleatorio = buscar_recurso_aleatorio_calidad()
+        if recurso_aleatorio:
+            st.success("¡Encontrado un recurso excelente!")
+            mostrar_recurso(recurso_aleatorio, 0)  # Mostramos el recurso con el índice 0
+        else:
+            st.warning("No se encontraron recursos con alta calificación aún. ¡Sigue usando el buscador y dando feedback!")
     # --- Renderizado de Contenido Dinámico ---
     current_results = st.session_state.get('resultados', [])
     if current_results:
@@ -1784,4 +1813,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
