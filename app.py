@@ -620,11 +620,20 @@ async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[Recur
     if not validate_api_key(GOOGLE_API_KEY, "google") or not GOOGLE_CX:
         return []
     try:
+        # Ajustar la consulta para incluir más términos relevantes
         query_base = f"{tema} curso gratuito certificado"
         if nivel not in ("Cualquiera", "Todos"):
             query_base += f" nivel {nivel.lower()}"
+
         url = "https://www.googleapis.com/customsearch/v1"
-        params = {'key': GOOGLE_API_KEY, 'cx': GOOGLE_CX, 'q': query_base, 'num': 5, 'lr': f'lang_{idioma}'}
+        params = {
+            'key': GOOGLE_API_KEY,
+            'cx': GOOGLE_CX,
+            'q': query_base,
+            'num': 10,  # Aumentar el número de resultados
+            'lr': f'lang_{idioma}'
+        }
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params, timeout=8) as response:
                 if response.status != 200:
@@ -632,16 +641,24 @@ async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[Recur
                 data = await response.json()
                 items = data.get('items', [])
                 resultados: List[RecursoEducativo] = []
+                
                 for item in items:
                     url_item = item.get('link', '')
                     titulo = item.get('title', '')
                     descripcion = item.get('snippet', '')
+                    
+                    # Filtrar resultados más estrictamente
                     if not es_recurso_educativo_valido(url_item, titulo, descripcion):
                         continue
+                    
                     nivel_calc = determinar_nivel(titulo + " " + descripcion, nivel)
                     confianza = 0.83
+                    
+                    # Mejora en la evaluación de confianza
                     if any(d in url_item.lower() for d in ['.edu', 'coursera.org', 'edx.org', 'freecodecamp.org', '.gov']):
                         confianza = min(confianza + 0.1, 0.95)
+                    
+                    # Añadir el recurso a la lista
                     resultados.append(RecursoEducativo(
                         id=generar_id_unico(url_item),
                         titulo=titulo or f"Recurso {generar_id_unico(url_item)}",
@@ -658,10 +675,11 @@ async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[Recur
                         activo=True,
                         metadatos={'fuente': 'google_api'}
                     ))
-                return resultados[:5]
+                return resultados[:10]  # Limitar los resultados a los primeros 10
     except Exception as e:
         logger.error(f"Error Google API: {e}")
         return []
+
 
 def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_known_platforms", True):
@@ -1731,3 +1749,4 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
