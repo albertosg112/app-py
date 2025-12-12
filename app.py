@@ -613,7 +613,6 @@ def chatgroq(mensajes: List[Dict[str, str]]) -> str:
 # ============================================================
 # 8. BÚSQUEDA MULTICAPA (Google, Conocidas, Ocultas, DDG opcional)
 # ============================================================
-# ... (código anterior)
 
 def calcular_relevancia(titulo: str, descripcion: str, tema: str) -> float:
     """Calcula la relevancia de un recurso basado en coincidencias de palabras clave."""
@@ -631,8 +630,6 @@ def calcular_relevancia(titulo: str, descripcion: str, tema: str) -> float:
             relevancia += 0.5  # Coincidencia en la descripción
 
     return relevancia
-    
-# ... (código anterior)
 
 def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool:
     """Valida si un recurso educativo es relevante y no contiene términos excluidos."""
@@ -661,6 +658,7 @@ def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool
     
     # Retornar verdadero si contiene términos válidos
     return any(v in t for v in validas) or any(d in url.lower() for d in dominios_excluidos)
+
 
 @async_profile
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
@@ -1875,6 +1873,7 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
 
 
