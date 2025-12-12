@@ -1,5 +1,5 @@
-# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión v6.0 - IA Omnisciente)
-# Objetivo: IA conectada a BD Histórica + Resultados en Vivo + Análisis Técnico.
+# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión v6.1 - Fix Color Texto)
+# Objetivo: IA Omnisciente + Corrección de CSS para legibilidad (Texto Negro en Tarjetas).
 
 import streamlit as st
 import pandas as pd
@@ -909,9 +909,11 @@ st.markdown("""
 .main-header h1 { margin: 0; font-size: 2.3rem; }
 .resultado-card {
   border-radius: 15px; padding: 20px; margin-bottom: 20px; background: white;
+  color: #1a1a1a; /* Fix: Texto negro forzado para tarjetas blancas */
   box-shadow: 0 5px 20px rgba(0,0,0,0.08); border-left: 6px solid #4CAF50;
   transition: transform .2s;
 }
+.resultado-card h3, .resultado-card p { color: #1a1a1a; } /* Fix adicional: Forzar títulos y párrafos */
 .resultado-card:hover { transform: translateY(-3px); }
 .nivel-principiante { border-left-color: #2196F3 !important; }
 .nivel-intermedio { border-left-color: #4CAF50 !important; }
@@ -972,13 +974,13 @@ def mostrar_recurso(r: RecursoEducativo, idx: int):
 
     desc = r.descripcion or "Sin descripción disponible."
     titulo = r.titulo or "Recurso Educativo"
-    fav_btn = f"""<button onclick="window.parent.postMessage({{'action':'add_fav','id':'{r.id}'}}, '*')" style="margin-left:8px;padding:6px 10px;border-radius:8px;border:1px solid #e0e0e0;background:#fafafa;cursor:pointer;">⭐ Favorito</button>"""
+    fav_btn = f"""<button onclick="window.parent.postMessage({{'action':'add_fav','id':'{r.id}'}}, '*')" style="margin-left:8px;padding:6px 10px;border-radius:8px;border:1px solid #e0e0e0;background:#fafafa;cursor:pointer;color:#333;">⭐ Favorito</button>"""
 
     st.markdown(f"""
 <div class="resultado-card {nivel_class} {extra_class}">
   <h3 style="margin-top:0;">{titulo} {estado}</h3>
   <p><strong>📚 {r.nivel}</strong> | 🌐 {r.plataforma} | 🏷️ {r.categoria}</p>
-  <p style="color:#555;">{desc}</p>
+  <p>{desc}</p>
   <div style="margin-bottom:10px;">{cert_html}</div>
   {ia_block}
   <div style="margin-top:15px;">{link_button(r.url, "➡️ Acceder al recurso")}{fav_btn}</div>
