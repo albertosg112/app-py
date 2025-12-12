@@ -1,5 +1,5 @@
-# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión v5.0 - IA Conectada a DB)
-# Objetivo: 1200+ líneas. Incluye Fixes anteriores + IA con acceso a Base de Datos Local.
+# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión v6.0 - IA Omnisciente)
+# Objetivo: IA conectada a BD Histórica + Resultados en Vivo + Análisis Técnico.
 
 import streamlit as st
 import pandas as pd
@@ -448,7 +448,7 @@ def ui_chat_mostrar(mensaje: str, rol: str):
         st.markdown(f"👤 **Tú:** {texto_limpio}")
 
 # ============================================================
-# 7. INTEGRACIÓN GROQ (Análisis & Chat - MEJORADO PARA DB)
+# 7. INTEGRACIÓN GROQ (Análisis & Chat - 3 CEREBROS)
 # ============================================================
 def analizar_recurso_groq_sync(recurso: RecursoEducativo, perfil: Dict):
     """Worker robusto para Groq con manejo de errores mejorado y JSON format."""
@@ -523,53 +523,92 @@ def ejecutar_analisis_background(resultados: List[RecursoEducativo]):
     for r in pendientes:
         executor.submit(analizar_recurso_groq_sync, r, {})
 
-# --- NUEVA FUNCIÓN: Obtener contexto de la DB para la IA ---
+# --- FUNCIÓN MEJORADA: Contexto Rico (Estadísticas + Plataformas) ---
 def obtener_contexto_db_para_ia() -> str:
-    """Extrae un resumen de las plataformas ocultas para que la IA las conozca."""
+    """Extrae estadísticas vivas y plataformas para que la IA sea un verdadero admin."""
+    texto_contexto = "=== 1. CONTEXTO HISTÓRICO DE LA PÁGINA ===\n"
+    
     try:
-        texto = "PLATAFORMAS EDUCATIVAS DISPONIBLES EN TU BASE DE DATOS:\n"
         with get_db_connection(DB_PATH) as conn:
             c = conn.cursor()
-            c.execute("SELECT nombre, descripcion, categoria, nivel FROM plataformas_ocultas WHERE activa=1 LIMIT 15")
-            rows = c.fetchall()
-            if not rows:
-                return "No hay plataformas específicas en la base de datos local."
-            for r in rows:
-                texto += f"- {r[0]} ({r[2]}, Nivel {r[3]}): {r[1]}\n"
-        return texto
-    except Exception as e:
-        logger.error(f"Error obteniendo contexto DB: {e}")
-        return ""
+            
+            # 1. Lo más buscado (Tendencias)
+            c.execute("SELECT tema, COUNT(*) as total FROM analiticas_busquedas GROUP BY tema ORDER BY total DESC LIMIT 5")
+            top_busquedas = c.fetchall()
+            if top_busquedas:
+                texto_contexto += "🔥 TENDENCIAS (Lo que más busca la gente):\n"
+                for row in top_busquedas:
+                    texto_contexto += f"- {row[0]} ({row[1]} búsquedas)\n"
+            
+            # 2. Favoritos (Lo que la gente 'descarga' o guarda)
+            c.execute("SELECT titulo, COUNT(*) as total FROM favoritos GROUP BY titulo ORDER BY total DESC LIMIT 5")
+            top_favs = c.fetchall()
+            if top_favs:
+                texto_contexto += "\n⭐ LOS FAVORITOS (Cursos más guardados/populares):\n"
+                for row in top_favs:
+                    texto_contexto += f"- {row[0]} ({row[1]} usuarios lo guardaron)\n"
+            else:
+                texto_contexto += "\n⭐ LOS FAVORITOS: Aún no hay cursos guardados por usuarios.\n"
 
+            # 3. Plataformas Disponibles (Catálogo)
+            c.execute("SELECT nombre, categoria FROM plataformas_ocultas WHERE activa=1 LIMIT 10")
+            plats = c.fetchall()
+            texto_contexto += "\n📚 CATÁLOGO DE PLATAFORMAS (Recomienda estas):\n"
+            for p in plats:
+                texto_contexto += f"- {p[0]} (Tipo: {p[1]})\n"
+                
+    except Exception as e:
+        logger.error(f"Error generando contexto IA: {e}")
+        return "Error leyendo base de datos."
+        
+    return texto_contexto
+
+# --- FUNCIÓN MEJORADA: Chat Omnisciente ---
 def chatgroq(mensajes: List[Dict[str, str]]) -> str:
     if not (GROQ_AVAILABLE and st.session_state.features.get("enable_chat_ia", True)):
         return "🧠 IA no disponible. Usa el buscador superior para encontrar cursos ahora."
     try:
         client = groq.Groq(api_key=GROQ_API_KEY)
         
-        # --- INYECCIÓN DE CONTEXTO DE BASE DE DATOS ---
-        contexto_db = obtener_contexto_db_para_ia()
+        # 1. Obtenemos Contexto Histórico
+        contexto_vivo = obtener_contexto_db_para_ia()
         
+        # 2. Obtenemos Contexto en Tiempo Real (Resultados en Pantalla)
+        resultados_en_pantalla = st.session_state.get('resultados', [])
+        contexto_real_time = "=== 2. RESULTADOS EN PANTALLA AHORA MISMO (Recomienda de aquí) ===\n"
+        if resultados_en_pantalla:
+            for r in resultados_en_pantalla[:7]: # Solo los primeros 7 para no saturar
+                ia_score = ""
+                if r.metadatos_analisis:
+                    calidad = int(r.metadatos_analisis.get('calidad_ia', 0) * 100)
+                    ia_score = f"[IA Score: {calidad}/100]"
+                contexto_real_time += f"- {r.titulo} ({r.plataforma}) {ia_score}\n"
+        else:
+            contexto_real_time += "El usuario aún no ha realizado una búsqueda o no hay resultados en pantalla.\n"
+
+        # 3. Construimos el Prompt Maestro
         system_prompt = (
-            "Eres 'CursosBot', el recepcionista virtual y consejero educativo de esta plataforma. "
-            "Tu misión es saludar amablemente a los usuarios, preguntarles qué desean aprender y guiarlos. "
-            f"TIENES ACCESO EXCLUSIVO A ESTA LISTA DE RECURSOS VERIFICADOS EN TU SISTEMA:\n{contexto_db}\n"
-            "INSTRUCCIONES CLAVE:\n"
-            "1. Si el usuario saluda, preséntate y ofrece ayuda.\n"
-            "2. Si el usuario busca un tema, revisa tu lista de recursos verificados (arriba) y sugiérelos primero.\n"
-            "3. Si no hay nada en tu lista, da consejos generales.\n"
-            "4. Sé breve, amable y usa emojis.\n"
-            "5. NO uses formato JSON en tu respuesta de chat."
+            "Eres 'CursosBot', el recepcionista, administrador y consejero experto de este 'Buscador Profesional'. "
+            "Tu personalidad es amable, profesional y servicial. Tienes ACCESO TOTAL a la información de la página.\n\n"
+            f"{contexto_vivo}\n\n"
+            f"{contexto_real_time}\n\n"
+            "INSTRUCCIONES MAESTRAS:\n"
+            "1. Si el usuario pregunta qué buscar, basa tu respuesta en las TENDENCIAS y FAVORITOS históricos.\n"
+            "2. Si el usuario pregunta 'qué me recomiendas de lo que veo', REVISA LOS RESULTADOS EN PANTALLA y recomienda los que tengan mejor 'IA Score' o confianza.\n"
+            "3. Si el usuario saluda, preséntate como el asistente inteligente de la plataforma.\n"
+            "4. Respuestas cortas, al grano y sin formato JSON (usa texto plano y emojis)."
         )
         
         groq_msgs = [{"role": "system", "content": system_prompt}] + mensajes
+        
+        # Temperatura baja para fidelidad a los datos
         resp = client.chat.completions.create(
-            messages=groq_msgs, model=GROQ_MODEL, temperature=0.6, max_tokens=700
+            messages=groq_msgs, model=GROQ_MODEL, temperature=0.4, max_tokens=600
         )
         return resp.choices[0].message.content
     except Exception as e:
         logger.error(f"Error en chat Groq: {e}")
-        return "Hubo un error con la IA. Intenta de nuevo."
+        return "Tuve un pequeño error de conexión, pero aquí estoy. ¿En qué más puedo ayudar?"
 
 # ============================================================
 # 8. BÚSQUEDA MULTICAPA (Google, Conocidas, Ocultas, DDG opcional)
@@ -1162,7 +1201,7 @@ def sidebar_chat():
     with st.sidebar:
         st.header("💬 Asistente Educativo")
         if "chat_msgs" not in st.session_state:
-            # Mensaje de bienvenida inicial si está vacío
+            # Mensaje de bienvenida inicial
             st.session_state.chat_msgs = [
                 {"role": "assistant", "content": "¡Hola! Soy CursosBot. ¿En qué puedo ayudarte hoy?"}
             ]
@@ -1449,6 +1488,7 @@ def ensure_session():
         try:
             with get_db_connection(DB_PATH) as conn:
                 c = conn.cursor()
+                # PARCHE: Crear tabla si no existe antes de insertar
                 c.execute('''
                 CREATE TABLE IF NOT EXISTS sesiones (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
