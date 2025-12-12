@@ -631,6 +631,40 @@ def calcular_relevancia(titulo: str, descripcion: str, tema: str) -> float:
             relevancia += 0.5  # Coincidencia en la descripción
 
     return relevancia
+    
+# ... (código anterior)
+
+def es_recurso_educativo_valido(url: str, titulo: str, descripcion: str) -> bool:
+    """Valida si un recurso educativo es relevante y no contiene términos excluidos."""
+    t = (url + (titulo or "") + (descripcion or "")).lower()
+    
+    # Términos que indican que el recurso no es relevante
+    invalidas = [
+        'comprar', 'buy', 'precio', 'price', 'premium', 
+        'paid', 'only', 'exclusive', 'suscripción', 
+        'subscription', 'membership', 'register now', 
+        'matrícula', 'biblioteca virtual miguel de cervantes', 
+        'aprende con alf'
+    ]
+    
+    # Términos que indican que el recurso es relevante
+    validas = ['curso', 'tutorial', 'aprender', 'learn', 
+               'gratis', 'free', 'class', 'education', 
+               'educación', 'certificado', 'certificate']
+    
+    # Dominios que se deben excluir
+    dominios_excluidos = ['cervantesvirtual.com', 'aprendeconalf.es']
+
+    # Verificar si contiene términos inválidos o pertenece a dominios excluidos
+    if any(i in t for i in invalidas) or any(d in url.lower() for d in dominios_excluidos):
+        return False
+    
+    # Retornar verdadero si contiene términos válidos
+    return any(v in t for v in validas) or any(d in url.lower() for d in dominios_excluidos)
+
+@async_profile
+async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
+    # ... (resto de la función)
 
 @async_profile
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
@@ -1841,5 +1875,6 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
 
