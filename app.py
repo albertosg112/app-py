@@ -773,7 +773,56 @@ def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[Re
     except Exception as e:
         logger.error(f"Error al obtener plataformas ocultas: {e}")
         return []
+# --- NUEVA FUNCIÓN: MOTOR DISCOVERY (Agrega esto sin borrar nada) ---
+def buscar_discovery_aleatorio(tema: str, idioma: str) -> List[RecursoEducativo]:
+    """
+    Selecciona 3 fuentes de alta calidad AL AZAR de una lista de élite.
+    Esto añade 'serendipia' sin tocar Google ni la DB.
+    """
+    fuentes_elite = [
+        ("MIT OpenCourseWare", "https://ocw.mit.edu/search/?q={}", "en"),
+        ("Stanford Online", "https://online.stanford.edu/search-catalog?search={}", "en"),
+        ("Harvard University", "https://pll.harvard.edu/catalog?keywords={}", "en"),
+        ("OER Commons", "https://www.oercommons.org/search?q={}", "en"),
+        ("Merlot.org", "https://www.merlot.org/merlot/materials.htm?keywords={}", "en"),
+        ("Class Central", "https://www.classcentral.com/search?q={}&free=true", "en"),
+        ("UNAM (CUAIEED)", "https://cuaieed.unam.mx/descargas.php?q={}", "es"),
+        ("Bibl. Cervantes", "https://www.cervantesvirtual.com/buscar/?q={}", "es"),
+        ("Redalyc Papers", "https://www.redalyc.org/busquedaArticuloFiltros.oa?q={}", "es"),
+        ("Eduteka", "https://eduteka.icesi.edu.co/buscador?q={}", "es"),
+        ("Khan Academy", "https://es.khanacademy.org/search?page_search_query={}", "es"),
+        ("Internet Archive", "https://archive.org/search?query={}&mediatype=texts", "en"),
+        ("FreeCodeCamp", "https://www.freecodecamp.org/news/search/?query={}", "en"),
+        ("Kaggle Datasets", "https://www.kaggle.com/search?q={}", "en"),
+        ("Google Books", "https://www.google.com/search?tbm=bks&q={}", "es")
+    ]
 
+    # Filtrar por idioma o permitir inglés como fallback universal
+    candidatos = [f for f in fuentes_elite if f[2] == idioma or f[2] == 'en']
+    
+    # Elegir 3 al azar
+    seleccionados = random.sample(candidatos, min(3, len(candidatos)))
+    
+    resultados = []
+    for nombre, url_pattern, lang in seleccionados:
+        url_final = url_pattern.format(quote_plus(tema))
+        resultados.append(RecursoEducativo(
+            id=generar_id_unico(url_final),
+            titulo=f"🎲 Explorar '{tema}' en {nombre}",
+            url=url_final,
+            descripcion=f"Sugerencia Discovery: Busca recursos de alta calidad en {nombre}.",
+            plataforma=nombre,
+            idioma=lang,
+            nivel="Varios",
+            categoria="Discovery",
+            certificacion=None,
+            confianza=0.88,
+            tipo="conocida",
+            ultima_verificacion=datetime.now().isoformat(),
+            activo=True,
+            metadatos={"fuente": "motor_aleatorio"}
+        ))
+    return resultados
 def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEducativo]:
     seen = set()
     unicos: List[RecursoEducativo] = []
@@ -784,48 +833,52 @@ def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEduca
     return unicos
 
 @async_profile
-async def buscar_recursos_multicapa(tema: str, idioma_seleccion_ui: str, nivel: str) -> List[RecursoEducativo]:
+async def buscar_recursos_multicapa_ext(tema: str, idioma_seleccion_ui: str, nivel: str) -> List[RecursoEducativo]:
+    # Cache Check
     cache_key = f"{tema}|{idioma_seleccion_ui}|{nivel}"
     cached = search_cache.get(cache_key)
-    if cached:
-        return cached
+    if cached: return cached
 
     idioma = get_codigo_idioma(idioma_seleccion_ui)
-    resultados: List[RecursoEducativo] = []
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    status_text.text("Buscando en plataformas ocultas...")
-    ocultas = buscar_en_plataformas_ocultas(tema, idioma, nivel)
-    resultados.extend(ocultas)
-    progress_bar.progress(0.3)
-
-    status_text.text("Consultando Google API...")
-    google_res = await buscar_en_google_api(tema, idioma, nivel)
-    resultados.extend(google_res)
-    progress_bar.progress(0.6)
-
-    status_text.text("Buscando en plataformas conocidas...")
-    conocidas = buscar_en_plataformas_conocidas(tema, idioma, nivel)
-    resultados.extend(conocidas)
-    progress_bar.progress(0.85)
-
-    status_text.text("Procesando y deduplicando resultados...")
-    resultados = eliminar_duplicados(resultados)
-    resultados.sort(key=lambda x: x.confianza, reverse=True)
-    if st.session_state.features.get("enable_groq_analysis", True) and GROQ_AVAILABLE:
-        for r in resultados[:st.session_state.features.get("max_analysis", 5)]:
-            r.analisis_pendiente = True
-
-    final = resultados[:st.session_state.features.get("max_results", 15)]
+    
+    # --- EJECUCIÓN PARALELA DE FUENTES ---
+    
+    # 1. Google API (Async) - NO SE TOCA, SE MANTIENE
+    task_google = buscar_en_google_api(tema, idioma, nivel)
+    
+    # 2. DuckDuckGo (Async) - Si está activo
+    task_ddg = buscar_en_duckduckgo(tema, idioma, nivel)
+    
+    # 3. Fuentes Síncronas (Rápidas)
+    # Aquí llamamos a lo que ya tenías...
+    res_db = buscar_en_plataformas_ocultas(tema, idioma, nivel)       # Tu DB original
+    res_known = buscar_en_plataformas_conocidas(tema, idioma, nivel)   # Tu lista original
+    
+    # ... Y AQUÍ AGREGAMOS LA NUEVA "MAGIA"
+    res_discovery = buscar_discovery_aleatorio(tema, idioma)           # <--- NUEVO COMPONENTE
+    
+    # Esperar a las tareas asíncronas
+    res_google, res_ddg = await asyncio.gather(task_google, task_ddg)
+    
+    # --- FUSIÓN DE RESULTADOS ---
+    # Sumamos todo lo que encontramos
+    todos = res_google + res_db + res_known + res_discovery + res_ddg
+    
+    # Limpieza final
+    todos = eliminar_duplicados(todos)
+    todos.sort(key=lambda x: x.confianza, reverse=True)
+    
+    # Recortar al máximo configurado
+    final = todos[:st.session_state.features.get("max_results", 15)]
+    
+    # Guardar en caché
     search_cache.set(cache_key, final)
-
-    progress_bar.progress(1.0)
-    time.sleep(0.1)
-    progress_bar.empty()
-    status_text.empty()
-
+    
+    # Preparar análisis IA si corresponde
+    if st.session_state.features.get("enable_groq_analysis", True) and GROQ_AVAILABLE:
+        for r in final[:st.session_state.features.get("max_analysis", 5)]:
+            r.analisis_pendiente = True
+            
     return final
 
 # ============================================================
@@ -1731,3 +1784,4 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
