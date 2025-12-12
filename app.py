@@ -611,8 +611,11 @@ def chatgroq(mensajes: List[Dict[str, str]]) -> str:
         return "Tuve un pequeño error de conexión, pero aquí estoy. ¿En qué más puedo ayudar?"
 
 # ============================================================
-# 8. BÚSQUEDA MULTICAPA (Google, Conocidas, Ocultas, DDG opcional)
+# 8. BÚSQUEDA MULTICAPA (Google, Conocidas, Ocultas, Elite)
 # ============================================================
+
+# --- 8.1 FUNCIONES ORIGINALES (Google, DB, Utils) ---
+
 @async_profile
 async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_google_api", True):
@@ -662,143 +665,6 @@ async def buscar_en_google_api(tema: str, idioma: str, nivel: str) -> List[Recur
     except Exception as e:
         logger.error(f"Error Google API: {e}")
         return []
-
-def buscar_en_sitios_profundos(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    """Genera 1 recurso educativo de fuente poco conocida pero de alta calidad y gratuita."""
-    if not st.session_state.features.get("enable_known_platforms", True):
-        return []
-    
-    sitios_profundos = [
-        ("OER Commons", "https://www.oercommons.org/search?q={}", "Global", "en"),
-        ("MERLOT", "https://www.merlot.org/merlot/materials.htm?keywords={}", "EE.UU.", "en"),
-        ("OpenStax", "https://openstax.org/search?query={}", "EE.UU.", "en"),
-        ("Instituto Cervantes", "https://cvc.cervantes.es/ensenanza/biblioteca_ele/?q={}", "España", "es"),
-        ("UNESCO OER", "https://en.unesco.org/themes/education/ict/open-educational-resources", "Global", "en"),
-        ("Internet Archive", "https://archive.org/search?query={}+course", "Global", "en"),
-        ("Open Culture", "https://www.openculture.com/freeonlinecourses", "Global", "en"),
-        ("LibreTexts", "https://libretexts.org/search?terms={}", "Global", "en"),
-        ("Open WHO", "https://open.who.int/", "Global", "en"),
-        ("Biblioteca Pensamiento Novohispano", "https://pensamientonovohispano.org/", "México", "es"),
-        ("RIAL", "https://www.rial.org.mx/", "Iberoamérica", "es"),
-        ("Code.org", "https://code.org/educate/search?q={}", "Global", "en"),
-        ("CK-12", "https://www.ck12.org/search/?q={}", "Global", "en"),
-        ("Saylor Academy", "https://learn.saylor.org/course/index.php?search={}", "Global", "en")
-    ]
-    
-    # Filtrar por idioma
-    candidatos = [
-        (nombre, url_base.format(quote_plus(tema)))
-        for nombre, url_base, _, idioma_req in sitios_profundos
-        if idioma == idioma_req
-    ]
-    
-    if not candidatos:
-        candidatos = [
-            (nombre, url_base.format(quote_plus(tema)))
-            for nombre, url_base, _, _ in sitios_profundos
-        ]
-    
-    nombre_seleccionado, url_seleccionada = random.choice(candidatos)
-    
-    return [RecursoEducativo(
-        id=generar_id_unico(url_seleccionada),
-        titulo=f"🔍 Profundo: {tema} en {nombre_seleccionado}",
-        url=url_seleccionada,
-        descripcion=f"Recurso educativo gratuito de fuente poco indexada pero confiable: {nombre_seleccionado}.",
-        plataforma=nombre_seleccionado,
-        idioma=idioma,
-        nivel=nivel if nivel not in ("Cualquiera", "Todos") else "Intermedio",
-        categoria=determinar_categoria(tema),
-        certificacion=None,
-        confianza=0.77,
-        tipo="conocida",
-        ultima_verificacion=datetime.now().isoformat(),
-        activo=True,
-        metadatos={"fuente": "busqueda_profunda"}
-    )]
-def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
-    if not st.session_state.features.get("enable_known_platforms", True):
-        return []
-    
-    # === 1. Lista predefinida de plataformas conocidas ===
-    plataformas_predef = {
-        "es": [
-            {"nombre": "YouTube Educativo", "url": f"https://www.youtube.com/results?search_query=curso+gratis+{quote_plus(tema)}"},
-            {"nombre": "Coursera (ES)", "url": f"https://www.coursera.org/search?query={quote_plus(tema)}&languages=es&free=true"},
-            {"nombre": "Udemy (Gratis)", "url": f"https://www.udemy.com/courses/search/?q={quote_plus(tema)}&price=price-free&lang=es"},
-            {"nombre": "Khan Academy (ES)", "url": f"https://es.khanacademy.org/search?page_search_query={quote_plus(tema)}"}
-        ],
-        "en": [
-            {"nombre": "YouTube Education", "url": f"https://www.youtube.com/results?search_query=free+course+{quote_plus(tema)}"},
-            {"nombre": "Khan Academy", "url": f"https://www.khanacademy.org/search?page_search_query={quote_plus(tema)}"},
-            {"nombre": "Coursera", "url": f"https://www.coursera.org/search?query={quote_plus(tema)}&free=true"},
-            {"nombre": "Udemy (Free)", "url": f"https://www.udemy.com/courses/search/?q={quote_plus(tema)}&price=price-free&lang=en"},
-            {"nombre": "edX", "url": f"https://www.edx.org/search?tab=course&availability=current&price=free&q={quote_plus(tema)}"},
-            {"nombre": "freeCodeCamp", "url": f"https://www.freecodecamp.org/news/search/?query={quote_plus(tema)}"}
-        ],
-        "pt": [
-            {"nombre": "YouTube BR", "url": f"https://www.youtube.com/results?search_query=curso+gratuito+{quote_plus(tema)}"},
-            {"nombre": "Coursera (PT)", "url": f"https://www.coursera.org/search?query={quote_plus(tema)}&languages=pt&free=true"},
-            {"nombre": "Udemy (PT)", "url": f"https://www.udemy.com/courses/search/?q={quote_plus(tema)}&price=price-free&lang=pt"},
-            {"nombre": "Khan Academy (PT)", "url": f"https://pt.khanacademy.org/search?page_search_query={quote_plus(tema)}"}
-        ]
-    }
-    lista_base = plataformas_predef.get(idioma, plataformas_predef["en"])
-
-    # === 2. Decisión: ¿modo predefinido o aleatorio? ===
-    if random.random() < 0.5:
-        # ✅ 50%: Modo predefinido → mostrar plataformas conocidas
-        return [
-            RecursoEducativo(
-                id=generar_id_unico(plat["url"]),
-                titulo=f"🎯 {plat['nombre']} — {tema}",
-                url=plat["url"],
-                descripcion=f"Búsqueda directa en {plat['nombre']}",
-                plataforma=plat["nombre"],
-                idioma=idioma,
-                nivel=nivel if nivel != "Cualquiera" else "Intermedio",
-                categoria=determinar_categoria(tema),
-                certificacion=None,
-                confianza=0.85,
-                tipo="conocida",
-                ultima_verificacion=datetime.now().isoformat(),
-                activo=True,
-                metadatos={"fuente": "plataformas_conocidas"}
-            )
-            for plat in lista_base[:3]  # Máximo 3
-        ]
-    else:
-        # 🔁 50%: Modo aleatorio → 1 profundo + 2 universidades
-        recursos = []
-        
-        # ➕ 1 recurso profundo (representa ~25% del total final)
-        recursos.extend(buscar_en_sitios_profundos(tema, idioma, nivel))
-        
-        # ➕ 2 universidades de élite
-        universidades = [
-            "mit.edu", "stanford.edu", "harvard.edu", "ox.ac.uk", "cam.ac.uk",
-            "berkeley.edu", "ethz.ch", "nus.edu.sg", "utoronto.ca", "kaist.ac.kr"
-        ]
-        for dominio in random.sample(universidades, 2):
-            url = f"https://www.google.com/search?q=site:{dominio}+{quote_plus(tema)}+curso+free"
-            recursos.append(RecursoEducativo(
-                id=generar_id_unico(url),
-                titulo=f"🎓 Explorar {tema} en {dominio.title()}",
-                url=url,
-                descripcion=f"Recursos académicos gratuitos en la universidad {dominio}.",
-                plataforma=dominio.split('.')[0].title(),
-                idioma=idioma,
-                nivel=nivel if nivel != "Cualquiera" else "Intermedio",
-                categoria="Académico",
-                certificacion=None,
-                confianza=0.78,
-                tipo="conocida",
-                ultima_verificacion=datetime.now().isoformat(),
-                activo=True,
-                metadatos={"fuente": "discovery_universidad"}
-            ))
-        
-        return recursos
 
 def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
     if not st.session_state.features.get("enable_hidden_platforms", True):
@@ -862,50 +728,7 @@ def buscar_en_plataformas_ocultas(tema: str, idioma: str, nivel: str) -> List[Re
     except Exception as e:
         logger.error(f"Error al obtener plataformas ocultas: {e}")
         return []
-@profile
-def verificar_calidad_recurso(recurso: RecursoEducativo, tema: str) -> bool:
-    """
-    Verifica que:
-    1. La URL responde con código 200.
-    2. El contenido de la página incluye al menos 2 palabras clave del tema.
-    Retorna True si pasa ambas pruebas.
-    """
-    try:
-        import aiohttp
-        import asyncio
 
-        # Palabras clave derivadas del tema (simplificado)
-        palabras_tema = set(re.split(r'\W+', tema.lower()))
-        palabras_tema.discard('')  # Eliminar strings vacíos
-
-        if len(palabras_tema) == 0:
-            return True  # No hay tema, no se puede validar
-
-        async def _verificar():
-            timeout = aiohttp.ClientTimeout(total=5.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                try:
-                    async with session.get(recurso.url, headers={"User-Agent": "Mozilla/5.0 (compatible; BuscadorCursos/1.0)"}) as resp:
-                        if resp.status != 200:
-                            return False
-                        contenido = await resp.text()
-                        contenido_limpio = contenido.lower()
-
-                        coincidencias = sum(1 for palabra in palabras_tema if palabra in contenido_limpio)
-                        return coincidencias >= min(2, len(palabras_tema))  # al menos 2 o todas si hay <2
-                except Exception:
-                    return False
-
-        # Ejecutar async en contexto sync
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        resultado = loop.run_until_complete(_verificar())
-        loop.close()
-        return resultado
-
-    except Exception as e:
-        logger.warning(f"Error en verificación de calidad para {recurso.url}: {e}")
-        return False
 def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEducativo]:
     seen = set()
     unicos: List[RecursoEducativo] = []
@@ -915,51 +738,206 @@ def eliminar_duplicados(resultados: List[RecursoEducativo]) -> List[RecursoEduca
             unicos.append(r)
     return unicos
 
+# --- 8.2 NUEVO MOTOR DE VALIDACIÓN ACTIVA (Tus mejoras) ---
+
+async def validar_url_activa(url: str, tema: str) -> bool:
+    """
+    Visita la URL en segundo plano para asegurar que:
+    1. Responde correctamente (Status 200).
+    2. Contiene el tema buscado en el cuerpo (evita páginas de '0 resultados').
+    3. Es rápida (Timeout corto).
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    try:
+        timeout = aiohttp.ClientTimeout(total=3) # Máximo 3 segundos para no ralentizar la app
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, allow_redirects=True) as response:
+                if response.status != 200:
+                    return False
+                
+                # Leemos solo los primeros 10KB para ser rápidos
+                content = await response.content.read(10240) 
+                text = content.decode('utf-8', errors='ignore').lower()
+                
+                # Criterios de Calidad:
+                # 1. Debe mencionar el tema (al menos la palabra clave principal)
+                tema_clean = tema.lower().split()[0] 
+                if tema_clean not in text:
+                    return False
+                
+                # 2. No debe ser una página de error o vacía común
+                frases_vacias = ["no results found", "0 resultados", "page not found", "no encontramos", "try again"]
+                if any(f in text for f in frases_vacias):
+                    return False
+                    
+                return True
+    except Exception:
+        return False # Ante la duda (timeout, ssl error), descartamos el recurso
+
+# --- 8.3 BÚSQUEDA PROFUNDA Y CONOCIDA (OPTIMIZADA) ---
+
+def get_sitios_profundos_elite(idioma: str):
+    """Retorna solo fuentes de ALTA autoridad académica."""
+    base = [
+        # Global / Inglés (Alta calidad técnica)
+        ("MIT OpenCourseWare", "https://ocw.mit.edu/search/?q={}", "en"),
+        ("Stanford Online", "https://online.stanford.edu/search-catalog?search={}", "en"),
+        ("Harvard Online", "https://pll.harvard.edu/catalog?keywords={}", "en"),
+        ("OER Commons", "https://www.oercommons.org/search?q={}", "en"),
+        ("Merlot", "https://www.merlot.org/merlot/materials.htm?keywords={}", "en"),
+        
+        # Español / Iberoamérica (Alta calidad regional)
+        ("UNAM (CUAIEED)", "https://cuaieed.unam.mx/descargas.php?q={}", "es"),
+        ("Biblioteca Virtual Cervantes", "https://www.cervantesvirtual.com/buscar/?q={}", "es"),
+        ("Dialnet", "https://dialnet.unirioja.es/buscar/documentos?querysDismax.DOCUMENTAL_TODO={}", "es"),
+        ("Redalyc", "https://www.redalyc.org/busquedaArticuloFiltros.oa?q={}", "es"),
+        
+        # Brasil
+        ("FGV Online", "https://www5.fgv.br/fgvonline/Busca.aspx?q={}", "pt"),
+        ("Veduca", "https://veduca.org/?s={}", "pt")
+    ]
+    # Filtramos por idioma o 'en' como fallback universal
+    return [s for s in base if s[2] == idioma or s[2] == 'en']
+
 @async_profile
-async def buscar_recursos_multicapa(tema: str, idioma_seleccion_ui: str, nivel: str) -> List[RecursoEducativo]:
+async def buscar_en_sitios_profundos(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
+    """Genera candidatos y los valida activamente antes de mostrarlos."""
+    candidatos = get_sitios_profundos_elite(idioma)
+    random.shuffle(candidatos) # Mezclar para variedad
+    
+    recursos_validos = []
+    
+    # Intentamos validar hasta encontrar 2 buenos o se acaben los intentos
+    for nombre, url_pattern, lang in candidatos[:4]: # Probamos máx 4 sitios
+        url_final = url_pattern.format(quote_plus(tema))
+        
+        # VERIFICACIÓN ACTIVA
+        es_valido = await validar_url_activa(url_final, tema)
+        
+        if es_valido:
+            recursos_validos.append(RecursoEducativo(
+                id=generar_id_unico(url_final),
+                titulo=f"🏛️ {nombre}: Archivos de {tema}",
+                url=url_final,
+                descripcion=f"Recurso académico verificado en {nombre}. Contenido de alta calidad detectado.",
+                plataforma=nombre,
+                idioma=lang,
+                nivel="Académico",
+                categoria="Investigación",
+                certificacion=None,
+                confianza=0.92, # Alta confianza porque pasó la validación
+                tipo="conocida",
+                ultima_verificacion=datetime.now().isoformat(),
+                activo=True,
+                metadatos={"fuente": "deep_web_verified"}
+            ))
+            
+        if len(recursos_validos) >= 2: # Solo necesitamos un par de joyas
+            break
+            
+    return recursos_validos
+
+@async_profile
+async def buscar_en_plataformas_conocidas(tema: str, idioma: str, nivel: str) -> List[RecursoEducativo]:
+    """
+    Búsqueda híbrida: Prioriza enlaces directos a búsquedas predefinidas pero 
+    filtra aquellas que probablemente no tengan contenido.
+    """
+    if not st.session_state.features.get("enable_known_platforms", True):
+        return []
+
+    # 1. Definir candidatos de plataformas masivas
+    plataformas = {
+        "es": [
+            ("Coursera", f"https://www.coursera.org/search?query={quote_plus(tema)}&language=es"),
+            ("EdX", f"https://www.edx.org/search?q={quote_plus(tema)}&language=Spanish"),
+            ("Udemy", f"https://www.udemy.com/courses/search/?q={quote_plus(tema)}&lang=es&price=price-free")
+        ],
+        "en": [
+            ("Coursera", f"https://www.coursera.org/search?query={quote_plus(tema)}"),
+            ("MIT OCW", f"https://ocw.mit.edu/search/?q={quote_plus(tema)}"),
+            ("Harvard", f"https://pll.harvard.edu/catalog?keywords={quote_plus(tema)}")
+        ],
+        "pt": [
+            ("Coursera", f"https://www.coursera.org/search?query={quote_plus(tema)}&languages=pt"),
+            ("Udemy", f"https://www.udemy.com/courses/search/?q={quote_plus(tema)}&lang=pt&price=price-free")
+        ]
+    }
+    
+    lista = plataformas.get(idioma, plataformas["en"])
+    resultados = []
+
+    # 2. Validación asíncrona rápida de los candidatos
+    tasks = []
+    for nombre, url in lista:
+        tasks.append(validar_url_activa(url, tema))
+    
+    # Ejecutamos todas las validaciones en paralelo
+    validaciones = await asyncio.gather(*tasks)
+    
+    for i, (nombre, url) in enumerate(lista):
+        if validaciones[i]: # Solo si pasó la prueba de "no vacío"
+            resultados.append(RecursoEducativo(
+                id=generar_id_unico(url),
+                titulo=f"🎓 Curso de {tema} en {nombre}",
+                url=url,
+                descripcion=f"Búsqueda verificada en {nombre}. Se encontraron coincidencias activas.",
+                plataforma=nombre,
+                idioma=idioma,
+                nivel=nivel,
+                categoria="MOOC",
+                certificacion=Certificacion(nombre, tema, "audit", True, ["global"], 0.0, 0.9, datetime.now().isoformat()),
+                confianza=0.88,
+                tipo="conocida",
+                ultima_verificacion=datetime.now().isoformat(),
+                activo=True,
+                metadatos={"fuente": "plataforma_verificada"}
+            ))
+
+    return resultados
+
+# --- 8.4 ORQUESTADOR PRINCIPAL (EL CEREBRO DE LA BÚSQUEDA) ---
+
+@async_profile
+async def buscar_recursos_multicapa_ext(tema: str, idioma_seleccion_ui: str, nivel: str) -> List[RecursoEducativo]:
     cache_key = f"{tema}|{idioma_seleccion_ui}|{nivel}"
     cached = search_cache.get(cache_key)
     if cached:
         return cached
 
     idioma = get_codigo_idioma(idioma_seleccion_ui)
-    resultados: List[RecursoEducativo] = []
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    status_text.text("Buscando en plataformas ocultas...")
-    ocultas = buscar_en_plataformas_ocultas(tema, idioma, nivel)
-    resultados.extend(ocultas)
-    progress_bar.progress(0.3)
-
-    status_text.text("Consultando Google API...")
-    google_res = await buscar_en_google_api(tema, idioma, nivel)
-    resultados.extend(google_res)
-    progress_bar.progress(0.6)
-
-    status_text.text("Buscando en plataformas conocidas...")
-    conocidas = buscar_en_plataformas_conocidas(tema, idioma, nivel)
-    resultados.extend(conocidas)
-    progress_bar.progress(0.85)
-
-    status_text.text("Procesando y deduplicando resultados...")
-    resultados = eliminar_duplicados(resultados)
-    resultados.sort(key=lambda x: x.confianza, reverse=True)
+    
+    # 1. Búsqueda Síncrona (Base de datos local - Muy rápida)
+    resultados_db = buscar_en_plataformas_ocultas(tema, idioma, nivel)
+    
+    # 2. Búsquedas Asíncronas (Internet - Lentas, por eso van en paralelo)
+    task1 = buscar_en_google_api(tema, idioma, nivel)
+    task2 = buscar_en_plataformas_conocidas(tema, idioma, nivel)
+    task3 = buscar_en_sitios_profundos(tema, idioma, nivel) 
+    
+    # asyncio.gather ejecuta todo a la vez
+    resultados_internet = await asyncio.gather(task1, task2, task3)
+    
+    # 3. Consolidación
+    todos = resultados_db + [] # Empezamos con los de la DB
+    for r_list in resultados_internet:
+        todos.extend(r_list)
+        
+    # 4. Deduplicar y ordenar por confianza (Calidad > Cantidad)
+    todos = eliminar_duplicados(todos)
+    todos.sort(key=lambda x: x.confianza, reverse=True)
+    
+    # 5. Planificar Análisis IA para los top 5 resultados reales
     if st.session_state.features.get("enable_groq_analysis", True) and GROQ_AVAILABLE:
-        for r in resultados[:st.session_state.features.get("max_analysis", 5)]:
+        for r in todos[:st.session_state.features.get("max_analysis", 5)]: 
             r.analisis_pendiente = True
-
-    final = resultados[:st.session_state.features.get("max_results", 15)]
+    
+    final = todos[:st.session_state.features.get("max_results", 15)]
     search_cache.set(cache_key, final)
-
-    progress_bar.progress(1.0)
-    time.sleep(0.1)
-    progress_bar.empty()
-    status_text.empty()
-
+    
     return final
-
 # ============================================================
 # 9. PROCESAMIENTO EN SEGUNDO PLANO (Background Workers)
 # ============================================================
@@ -1863,6 +1841,7 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Error crítico en la aplicación: {e}")
+
 
 
 
