@@ -1,5 +1,5 @@
-# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión Final Depurada v4.1)
-# Correcciones: Fix conflicto librerías IA, Limpieza de Logs Altair, Estructura Unificada.
+# app.py — Consolidado Definitivo Ultra-Robust PRO (Versión v5.0 - IA Conectada a DB)
+# Objetivo: 1200+ líneas. Incluye Fixes anteriores + IA con acceso a Base de Datos Local.
 
 import streamlit as st
 import pandas as pd
@@ -23,12 +23,6 @@ import aiohttp
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
-
-# --- FILTRO DE RUIDO (NUEVO) ---
-# Silencia las advertencias de Altair/Narwhals que llenan los logs
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="altair")
-# -------------------------------
 
 # ============================================================
 # 0. PERFILADO LIGERO Y DECORADORES DE UTILIDAD
@@ -235,6 +229,7 @@ def migrate_database():
     try:
         with get_db_connection(DB_PATH) as conn:
             c = conn.cursor()
+            # Auditoría general de eventos
             c.execute('''
             CREATE TABLE IF NOT EXISTS auditoria (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,6 +238,7 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
+            # Favoritos de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS favoritos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,6 +249,7 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
+            # Feedback de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -262,6 +259,7 @@ def migrate_database():
                 creado_en TEXT NOT NULL
             )
             ''')
+            # Sesiones de usuario
             c.execute('''
             CREATE TABLE IF NOT EXISTS sesiones (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,6 +270,7 @@ def migrate_database():
                 prefs_json TEXT
             )
             ''')
+            # Telemetría opt-out: simple bandera global
             c.execute('''
             CREATE TABLE IF NOT EXISTS configuracion (
                 clave TEXT PRIMARY KEY,
@@ -449,7 +448,7 @@ def ui_chat_mostrar(mensaje: str, rol: str):
         st.markdown(f"👤 **Tú:** {texto_limpio}")
 
 # ============================================================
-# 7. INTEGRACIÓN GROQ (Análisis & Chat - CORREGIDO)
+# 7. INTEGRACIÓN GROQ (Análisis & Chat - MEJORADO PARA DB)
 # ============================================================
 def analizar_recurso_groq_sync(recurso: RecursoEducativo, perfil: Dict):
     """Worker robusto para Groq con manejo de errores mejorado y JSON format."""
@@ -524,18 +523,48 @@ def ejecutar_analisis_background(resultados: List[RecursoEducativo]):
     for r in pendientes:
         executor.submit(analizar_recurso_groq_sync, r, {})
 
+# --- NUEVA FUNCIÓN: Obtener contexto de la DB para la IA ---
+def obtener_contexto_db_para_ia() -> str:
+    """Extrae un resumen de las plataformas ocultas para que la IA las conozca."""
+    try:
+        texto = "PLATAFORMAS EDUCATIVAS DISPONIBLES EN TU BASE DE DATOS:\n"
+        with get_db_connection(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT nombre, descripcion, categoria, nivel FROM plataformas_ocultas WHERE activa=1 LIMIT 15")
+            rows = c.fetchall()
+            if not rows:
+                return "No hay plataformas específicas en la base de datos local."
+            for r in rows:
+                texto += f"- {r[0]} ({r[2]}, Nivel {r[3]}): {r[1]}\n"
+        return texto
+    except Exception as e:
+        logger.error(f"Error obteniendo contexto DB: {e}")
+        return ""
+
 def chatgroq(mensajes: List[Dict[str, str]]) -> str:
     if not (GROQ_AVAILABLE and st.session_state.features.get("enable_chat_ia", True)):
         return "🧠 IA no disponible. Usa el buscador superior para encontrar cursos ahora."
     try:
         client = groq.Groq(api_key=GROQ_API_KEY)
+        
+        # --- INYECCIÓN DE CONTEXTO DE BASE DE DATOS ---
+        contexto_db = obtener_contexto_db_para_ia()
+        
         system_prompt = (
-            "Eres un asistente educativo. Sé claro y útil. "
-            "NO uses formato JSON en tu respuesta de chat. Mantén respuestas breves y accionables."
+            "Eres 'CursosBot', el recepcionista virtual y consejero educativo de esta plataforma. "
+            "Tu misión es saludar amablemente a los usuarios, preguntarles qué desean aprender y guiarlos. "
+            f"TIENES ACCESO EXCLUSIVO A ESTA LISTA DE RECURSOS VERIFICADOS EN TU SISTEMA:\n{contexto_db}\n"
+            "INSTRUCCIONES CLAVE:\n"
+            "1. Si el usuario saluda, preséntate y ofrece ayuda.\n"
+            "2. Si el usuario busca un tema, revisa tu lista de recursos verificados (arriba) y sugiérelos primero.\n"
+            "3. Si no hay nada en tu lista, da consejos generales.\n"
+            "4. Sé breve, amable y usa emojis.\n"
+            "5. NO uses formato JSON en tu respuesta de chat."
         )
+        
         groq_msgs = [{"role": "system", "content": system_prompt}] + mensajes
         resp = client.chat.completions.create(
-            messages=groq_msgs, model=GROQ_MODEL, temperature=0.5, max_tokens=700
+            messages=groq_msgs, model=GROQ_MODEL, temperature=0.6, max_tokens=700
         )
         return resp.choices[0].message.content
     except Exception as e:
@@ -811,6 +840,8 @@ def planificar_analisis_ia(resultados: List[RecursoEducativo]):
 # 10. UI ESTILOS Y COMPONENTES
 # ============================================================
 st.set_page_config(page_title="🎓 Buscador Profesional de Cursos", page_icon="🎓", layout="wide", initial_sidebar_state="collapsed")
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="altair")
 init_feature_flags()
 
 def apply_theme(theme: str):
@@ -1131,7 +1162,10 @@ def sidebar_chat():
     with st.sidebar:
         st.header("💬 Asistente Educativo")
         if "chat_msgs" not in st.session_state:
-            st.session_state.chat_msgs = []
+            # Mensaje de bienvenida inicial si está vacío
+            st.session_state.chat_msgs = [
+                {"role": "assistant", "content": "¡Hola! Soy CursosBot. ¿En qué puedo ayudarte hoy?"}
+            ]
 
         for msg in st.session_state.chat_msgs:
             ui_chat_mostrar(msg["content"], msg["role"])
@@ -1415,7 +1449,6 @@ def ensure_session():
         try:
             with get_db_connection(DB_PATH) as conn:
                 c = conn.cursor()
-                # PARCHE: Crear tabla si no existe antes de insertar
                 c.execute('''
                 CREATE TABLE IF NOT EXISTS sesiones (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
