@@ -62,6 +62,23 @@ async def raiz():
     }
 
 
+def sanitizar_nombre_archivo(nombre: str) -> str:
+    """
+    Sanitiza el nombre del archivo para prevenir path traversal.
+    
+    Args:
+        nombre: Nombre propuesto para el archivo
+        
+    Returns:
+        Nombre seguro sin caracteres peligrosos
+    """
+    import re
+    # Remover caracteres peligrosos y path separators
+    nombre_seguro = re.sub(r'[^\w\-_]', '_', nombre)
+    # Limitar longitud
+    return nombre_seguro[:100]
+
+
 @app.post("/guardar")
 async def guardar_datos(payload: DatosN8N):
     """
@@ -84,6 +101,9 @@ async def guardar_datos(payload: DatosN8N):
         if not payload.datos:
             raise HTTPException(status_code=400, detail="No se recibieron datos")
         
+        # Sanitizar nombre del dataset para prevenir path injection
+        nombre_seguro = sanitizar_nombre_archivo(payload.nombre_dataset)
+        
         # Convertir a DataFrame de Polars
         df = pl.DataFrame(payload.datos)
         
@@ -93,8 +113,8 @@ async def guardar_datos(payload: DatosN8N):
             pl.lit(datetime.now().isoformat()).alias("_fecha_ingesta")
         ])
         
-        # Definir ruta del archivo
-        archivo_parquet = CARPETA_DATASETS / f"{payload.nombre_dataset}.parquet"
+        # Definir ruta del archivo (ahora con nombre sanitizado)
+        archivo_parquet = CARPETA_DATASETS / f"{nombre_seguro}.parquet"
         
         # Si el archivo existe, append; si no, crear nuevo
         if archivo_parquet.exists():
@@ -121,8 +141,11 @@ async def guardar_datos(payload: DatosN8N):
             "columnas": df.columns
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al guardar: {str(e)}")
+        # No exponer stack traces completos
+        raise HTTPException(status_code=500, detail="Error al guardar los datos")
 
 
 @app.get("/datasets")
@@ -165,7 +188,9 @@ async def listar_datasets():
 @app.get("/stats/{nombre_dataset}")
 async def estadisticas_dataset(nombre_dataset: str):
     """Obtiene estadísticas de un dataset específico"""
-    archivo_parquet = CARPETA_DATASETS / f"{nombre_dataset}.parquet"
+    # Sanitizar nombre para prevenir path injection
+    nombre_seguro = sanitizar_nombre_archivo(nombre_dataset)
+    archivo_parquet = CARPETA_DATASETS / f"{nombre_seguro}.parquet"
     
     if not archivo_parquet.exists():
         raise HTTPException(status_code=404, detail=f"Dataset '{nombre_dataset}' no encontrado")
@@ -201,10 +226,16 @@ async def estadisticas_dataset(nombre_dataset: str):
 @app.delete("/dataset/{nombre_dataset}")
 async def eliminar_dataset(nombre_dataset: str):
     """Elimina un dataset"""
-    archivo_parquet = CARPETA_DATASETS / f"{nombre_dataset}.parquet"
+    # Sanitizar nombre para prevenir path injection
+    nombre_seguro = sanitizar_nombre_archivo(nombre_dataset)
+    archivo_parquet = CARPETA_DATASETS / f"{nombre_seguro}.parquet"
+    
+    # Verificar que el archivo está dentro de CARPETA_DATASETS
+    if not archivo_parquet.resolve().parent == CARPETA_DATASETS.resolve():
+        raise HTTPException(status_code=400, detail="Ruta de archivo inválida")
     
     if not archivo_parquet.exists():
-        raise HTTPException(status_code=404, detail=f"Dataset '{nombre_dataset}' no encontrado")
+        raise HTTPException(status_code=404, detail=f"Dataset '{nombre_seguro}' no encontrado")
     
     try:
         archivo_parquet.unlink()
@@ -223,7 +254,9 @@ async def preparar_para_entrenamiento(nombre_dataset: str, columnas_features: Li
     
     Exporta el dataset en formato optimizado para scikit-learn, PyTorch, etc.
     """
-    archivo_parquet = CARPETA_DATASETS / f"{nombre_dataset}.parquet"
+    # Sanitizar nombre para prevenir path injection
+    nombre_seguro = sanitizar_nombre_archivo(nombre_dataset)
+    archivo_parquet = CARPETA_DATASETS / f"{nombre_seguro}.parquet"
     
     if not archivo_parquet.exists():
         raise HTTPException(status_code=404, detail=f"Dataset '{nombre_dataset}' no encontrado")
@@ -243,8 +276,8 @@ async def preparar_para_entrenamiento(nombre_dataset: str, columnas_features: Li
         # Seleccionar columnas
         df_entrenamiento = df.select(columnas_requeridas)
         
-        # Guardar versión para entrenamiento
-        archivo_train = CARPETA_DATASETS / f"{nombre_dataset}_train.parquet"
+        # Guardar versión para entrenamiento (usar nombre sanitizado)
+        archivo_train = CARPETA_DATASETS / f"{nombre_seguro}_train.parquet"
         df_entrenamiento.write_parquet(archivo_train, compression="zstd")
         
         return {
@@ -278,13 +311,18 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
 
 # ==================== FUNCIÓN PRINCIPAL ====================
-def iniciar_servidor(host: str = "0.0.0.0", port: int = 8000):
+def iniciar_servidor(host: str = "127.0.0.1", port: int = 8000):
     """
     Inicia el servidor FastAPI para recibir datos de n8n.
     
     Args:
-        host: Dirección IP (0.0.0.0 para acceso desde red local)
+        host: Dirección IP (127.0.0.1 para localhost solamente, 0.0.0.0 para red local)
         port: Puerto del servidor
+    
+    ADVERTENCIA DE SEGURIDAD:
+        Por defecto, el servidor solo acepta conexiones locales (127.0.0.1).
+        Si necesitas acceso desde la red local, cambia host a "0.0.0.0",
+        pero considera implementar autenticación antes de hacerlo.
     """
     print("""
     ╔══════════════════════════════════════════════════════════════════╗

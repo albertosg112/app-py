@@ -54,6 +54,8 @@ def prueba_basica_polars():
     print("🧪 PRUEBA BÁSICA - Crear Dataset de Ejemplo")
     print("=" * 70)
     
+    archivo_prueba = Path("test_dataset.parquet")
+    
     try:
         import polars as pl
         import pyarrow.parquet as pq
@@ -74,7 +76,6 @@ def prueba_basica_polars():
         print(df)
         
         # Guardar como Parquet
-        archivo_prueba = Path("test_dataset.parquet")
         df.write_parquet(archivo_prueba, compression="zstd")
         
         tamaño_kb = archivo_prueba.stat().st_size / 1024
@@ -90,15 +91,16 @@ def prueba_basica_polars():
         for nombre, tipo in df_leido.schema.items():
             print(f"   • {nombre:15} → {tipo}")
         
-        # Limpiar archivo de prueba
-        archivo_prueba.unlink()
-        print(f"\n🗑️  Archivo de prueba eliminado")
-        
         return True
         
     except Exception as e:
         print(f"\n❌ Error durante la prueba: {e}")
         return False
+    finally:
+        # Limpiar archivo de prueba siempre
+        if archivo_prueba.exists():
+            archivo_prueba.unlink()
+            print(f"\n🗑️  Archivo de prueba eliminado")
 
 
 def prueba_procesamiento_lazy():
@@ -106,6 +108,8 @@ def prueba_procesamiento_lazy():
     print("\n" + "=" * 70)
     print("🧪 PRUEBA AVANZADA - Procesamiento Lazy")
     print("=" * 70)
+    
+    archivo = Path("test_large.parquet")
     
     try:
         import polars as pl
@@ -121,7 +125,6 @@ def prueba_procesamiento_lazy():
         })
         
         # Guardar
-        archivo = Path("test_large.parquet")
         df.write_parquet(archivo)
         
         tamaño_mb = archivo.stat().st_size / (1024 * 1024)
@@ -140,15 +143,16 @@ def prueba_procesamiento_lazy():
         print(resultado)
         print(f"\n✅ Procesamiento completado sin cargar todo el archivo")
         
-        # Limpiar
-        archivo.unlink()
-        print(f"🗑️  Archivo de prueba eliminado")
-        
         return True
         
     except Exception as e:
         print(f"\n❌ Error durante la prueba: {e}")
         return False
+    finally:
+        # Limpiar siempre
+        if archivo.exists():
+            archivo.unlink()
+            print(f"🗑️  Archivo de prueba eliminado")
 
 
 def verificar_scripts():
