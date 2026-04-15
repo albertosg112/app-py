@@ -77,11 +77,11 @@ Tienes **3 scripts listos para usar**. Elige el que necesites:
    ```
 2. Verás:
    ```
-   🚀 Iniciando servidor en http://0.0.0.0:8000
+   🚀 Iniciando servidor en http://127.0.0.1:8000
    📖 Documentación: http://localhost:8000/docs
    ```
 3. En n8n, añade un nodo HTTP Request al final de tu flujo:
-   - URL: `http://localhost:8000/guardar`
+   - URL: `http://127.0.0.1:8000/guardar` (o `http://localhost:8000/guardar`)
    - Method: POST
    - Body:
      ```json

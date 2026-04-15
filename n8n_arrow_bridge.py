@@ -86,7 +86,7 @@ async def guardar_datos(payload: DatosN8N):
     
     Ejemplo de uso desde n8n:
     - Nodo HTTP Request configurado como POST
-    - URL: http://localhost:8000/guardar
+    - URL: http://127.0.0.1:8000/guardar (o http://localhost:8000/guardar)
     - Body JSON:
       {
         "datos": [
@@ -116,6 +116,12 @@ async def guardar_datos(payload: DatosN8N):
         # Definir ruta del archivo (ahora con nombre sanitizado)
         archivo_parquet = CARPETA_DATASETS / f"{nombre_seguro}.parquet"
         
+        # Validar que el archivo está dentro de CARPETA_DATASETS
+        try:
+            archivo_parquet.resolve().relative_to(CARPETA_DATASETS.resolve())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Ruta de archivo inválida")
+        
         # Si el archivo existe, append; si no, crear nuevo
         if archivo_parquet.exists():
             # Leer dataset existente
@@ -143,6 +149,8 @@ async def guardar_datos(payload: DatosN8N):
         
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Error en los datos proporcionados")
     except Exception as e:
         # No exponer stack traces completos
         raise HTTPException(status_code=500, detail="Error al guardar los datos")
@@ -192,6 +200,12 @@ async def estadisticas_dataset(nombre_dataset: str):
     nombre_seguro = sanitizar_nombre_archivo(nombre_dataset)
     archivo_parquet = CARPETA_DATASETS / f"{nombre_seguro}.parquet"
     
+    # Validar que el archivo está dentro de CARPETA_DATASETS (prevención adicional)
+    try:
+        archivo_parquet.resolve().relative_to(CARPETA_DATASETS.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Ruta de archivo inválida")
+    
     if not archivo_parquet.exists():
         raise HTTPException(status_code=404, detail=f"Dataset '{nombre_dataset}' no encontrado")
     
@@ -219,8 +233,11 @@ async def estadisticas_dataset(nombre_dataset: str):
         
         return stats
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al leer dataset: {str(e)}")
+        # No exponer stack traces
+        raise HTTPException(status_code=500, detail="Error al procesar el dataset")
 
 
 @app.delete("/dataset/{nombre_dataset}")
@@ -257,6 +274,12 @@ async def preparar_para_entrenamiento(nombre_dataset: str, columnas_features: Li
     # Sanitizar nombre para prevenir path injection
     nombre_seguro = sanitizar_nombre_archivo(nombre_dataset)
     archivo_parquet = CARPETA_DATASETS / f"{nombre_seguro}.parquet"
+    
+    # Validar que el archivo está dentro de CARPETA_DATASETS
+    try:
+        archivo_parquet.resolve().relative_to(CARPETA_DATASETS.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Ruta de archivo inválida")
     
     if not archivo_parquet.exists():
         raise HTTPException(status_code=404, detail=f"Dataset '{nombre_dataset}' no encontrado")
